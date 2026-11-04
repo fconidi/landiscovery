@@ -1,16 +1,12 @@
 #!/usr/bin/python3 -I
-"""Punto di ingresso dell'helper privilegiato di landiscovery (via pkexec)."""
-import os
+"""Punto di ingresso dell'helper privilegiato di landiscovery (via pkexec).
+
+Il codice viene caricato solo dalla posizione di installazione: nessun
+percorso dipende dalla posizione di questo file.
+"""
 import sys
 
-_INSTALLED = "/usr/share/landiscovery"
-_SOURCE_TREE = os.path.abspath(
-    os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "src"))
-
-if os.path.isdir(os.path.join(_INSTALLED, "landiscovery")):
-    sys.path.insert(0, _INSTALLED)
-else:
-    sys.path.insert(0, _SOURCE_TREE)
+sys.path.insert(0, "/usr/share/landiscovery")
 
 from landiscovery.helper import main  # noqa: E402
 

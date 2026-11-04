@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>SysLinuxOS</vendor>
+  <vendor_url>https://syslinuxos.com</vendor_url>
+  <icon_name>network-workgroup</icon_name>
+  <action id="org.syslinuxos.landiscovery.run">
+    <description>Run privileged network scans with LAN Discovery</description>
+    <description xml:lang="it">Eseguire scansioni di rete privilegiate con LAN Discovery</description>
+    <message>Authentication is required to run privileged network scans</message>
+    <message xml:lang="it">È richiesta l'autenticazione per eseguire scansioni di rete privilegiate</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/landiscovery/landiscovery-helper</annotate>
+  </action>
+</policyconfig>

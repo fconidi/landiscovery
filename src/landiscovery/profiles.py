@@ -12,7 +12,8 @@ _PORTS_RE = re.compile(r"^[0-9]+([,\-][0-9]+)*$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,40}$")
 
 
-def _validate_ports(ports: str) -> None:
+def validate_ports(ports: str) -> None:
+    """Solleva ValueError se ``ports`` non è una specifica di porte ammessa."""
     if not isinstance(ports, str):
         raise ValueError("porte non valide")
     if ports in ("", "top100"):
@@ -43,7 +44,7 @@ class Profile:
     def __post_init__(self):
         if not isinstance(self.name, str) or not _NAME_RE.fullmatch(self.name):
             raise ValueError(f"nome profilo non valido: {self.name!r}")
-        _validate_ports(self.ports)
+        validate_ports(self.ports)
 
 
 BUILTIN: dict[str, Profile] = {

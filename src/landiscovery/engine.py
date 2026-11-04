@@ -11,16 +11,25 @@ import ipaddress
 import logging
 import os
 import shutil
+import socket
+import struct
 import threading
 import time
 from dataclasses import dataclass
 
-from .helper import MAX_TARGETS, HelperError
+from . import discovery
+from .discovery import DiscoveredService, ToolMissing
+from .helper import MAX_TARGETS, NSE_ALLOWED, HelperError
 from .models import Coverage, Host, ScanResult
 from .nmapxml import ScanParseError, parse_nmap_xml
 from .oui import OuiDatabase
 from .profiles import Profile
 from .runner import HelperRunner, ScanCancelled
+from .security import parse_nse_findings
+from .topology import build_topology, parse_traceroute
+
+MAX_SERVICES_PER_HOST = 20
+MAX_SNMP_HOSTS = 256
 
 log = logging.getLogger(__name__)
 
@@ -74,12 +83,63 @@ def _missing_tool(exc: HelperError) -> bool:
     return getattr(exc, "returncode", None) == 127 or str(exc).startswith("cannot run")
 
 
+def _norm_ip(ip: str) -> str:
+    """Indirizzo normalizzato, senza zona; il testo originale se non valido."""
+    try:
+        return str(ipaddress.ip_address(str(ip).split("%", 1)[0]))
+    except ValueError:
+        return str(ip)
+
+
+def read_default_gateway(path: str = "/proc/net/route") -> str | None:
+    """Gateway IPv4 predefinito dalla tabella di routing; None se illeggibile."""
+    try:
+        with open(path, encoding="ascii", errors="replace") as fh:
+            lines = fh.read().splitlines()[1:]
+    except OSError:
+        return None
+    best = None
+    for line in lines:
+        cols = line.split()
+        try:
+            if len(cols) < 7 or int(cols[1], 16) != 0:
+                continue
+            flags, metric = int(cols[3], 16), int(cols[6])
+            gw = int(cols[2], 16)
+        except ValueError:
+            continue
+        if not flags & 2 or gw == 0:  # RTF_GATEWAY
+            continue
+        if best is None or metric < best[0]:
+            best = (metric, gw)
+    if best is None:
+        return None
+    return socket.inet_ntoa(struct.pack("<L", best[1]))
+
+
+class DefaultTools:
+    """Strumenti di scoperta reali (avahi, SSDP, snmpget, tabella di routing)."""
+
+    def mdns(self) -> list[DiscoveredService]:
+        return discovery.discover_mdns()
+
+    def ssdp(self) -> list[DiscoveredService]:
+        return discovery.discover_ssdp()
+
+    def snmp(self, ip: str, community: str) -> DiscoveredService | None:
+        return discovery.query_snmp(ip, community)
+
+    def gateway(self) -> str | None:
+        return read_default_gateway()
+
+
 class _Cancelled(Exception):
     pass
 
 
 class ScanEngine:
-    def __init__(self, runner=None, oui=None, privileged: bool | None = None):
+    def __init__(self, runner=None, oui=None, privileged: bool | None = None,
+                 tools=None):
         if privileged is None:
             privileged = os.geteuid() == 0 or shutil.which("pkexec") is not None
         self.privileged = bool(privileged)
@@ -87,6 +147,7 @@ class ScanEngine:
             runner = HelperRunner(direct=not self.privileged)
         self.runner = runner
         self._oui = oui
+        self.tools = tools if tools is not None else DefaultTools()
         self._cancel = threading.Event()
         self._lock = threading.Lock()
 
@@ -117,11 +178,11 @@ class ScanEngine:
         try:
             self._cancel.clear()
             self.runner.reset()
-            return self._scan(targets, profile, on_progress)
+            return self._scan(targets, profile, options or ScanOptions(), on_progress)
         finally:
             self._lock.release()
 
-    def _scan(self, targets, profile, on_progress) -> ScanResult:
+    def _scan(self, targets, profile, options, on_progress) -> ScanResult:
         target_strs = [str(t) for t in targets]
         priv = self.privileged
         do_ports = profile.ports != ""
@@ -138,9 +199,27 @@ class ScanEngine:
             result.warnings.append(
                 "OS detection needs privileges and was skipped (reduced mode)")
 
-        steps = ["discovery"] + (["ports"] if do_ports else []) + (["os"] if do_os else [])
+        do_trace = profile.traceroute and priv
+        if profile.traceroute and not priv:
+            result.warnings.append(
+                "traceroute needs privileges and was skipped (reduced mode)")
+        community = options.snmp_community or None
+        do_snmp = profile.snmp and community is not None
+        if profile.snmp and not do_snmp:
+            result.warnings.append("snmp community not provided")
+            incomplete = True
+        else:
+            incomplete = False
+        steps = (["discovery"] + (["ports"] if do_ports else [])
+                 + (["os"] if do_os else []) + (["traceroute"] if do_trace else [])
+                 + (["security"] if profile.security_checks else [])
+                 + (["mdns"] if profile.mdns else []) + (["ssdp"] if profile.ssdp else [])
+                 + (["snmp"] if do_snmp else []))
         state = _State(result, steps, on_progress)
+        if incomplete:
+            state.failures += 1
         hosts: dict[str, Host] = {}
+        hops: dict[str, list[str]] = {}
         try:
             self._discovery(state, hosts, target_strs, priv)
             ips = sorted(hosts, key=_ip_key)
@@ -148,6 +227,16 @@ class ScanEngine:
                 self._ports(state, hosts, ips, profile)
             if do_os:
                 self._os(state, hosts, ips)
+            if do_trace:
+                self._traceroute(state, ips, hops)
+            if profile.security_checks:
+                self._security(state, hosts, ips, profile)
+            if profile.mdns:
+                self._discover(state, hosts, "mdns", self.tools.mdns)
+            if profile.ssdp:
+                self._discover(state, hosts, "ssdp", self.tools.ssdp)
+            if do_snmp:
+                self._snmp(state, hosts, ips, community)
             result.status = "done"
         except _Cancelled:
             result.status = "cancelled"
@@ -157,6 +246,7 @@ class ScanEngine:
             result.status = "cancelled"
 
         result.hosts = self._finish_hosts(hosts, priv)
+        result.topology = self._topology(result.hosts, hops)
         if result.status == "done" and state.failures and not state.successes:
             result.status = "failed"
         result.complete = result.status == "done" and state.failures == 0
@@ -276,6 +366,131 @@ class ScanEngine:
                 self._absorb(state, "os detection", text, hosts, ("os",))
         if state.failures == before and not self._cancel.is_set():
             state.result.coverage.os_detect = True
+        state.end()
+
+
+    # --- passi opzionali ---------------------------------------------------------
+
+    def _topology(self, hosts: list[Host], hops: dict[str, list[str]]):
+        """Topologia dedotta; senza traceroute è la stella attorno al gateway.
+
+        Senza host restituisce una topologia con il solo gateway.
+        """
+        try:
+            gateway = self.tools.gateway()
+        except Exception:
+            log.debug("default gateway lookup failed", exc_info=True)
+            gateway = None
+        return build_topology(hosts, hops, gateway)
+
+    def _traceroute(self, state, ips, hops) -> None:
+        if not ips:
+            return
+        state.start("traceroute")
+        before = state.failures
+        for chunk in self._chunks(ips):
+            text = self._call(state, "traceroute", "traceroute", {"targets": chunk})
+            if text is None:
+                continue
+            try:
+                hops.update(parse_traceroute(text))
+            except Exception as exc:
+                state.fail(f"traceroute: {exc}")
+        if state.failures == before and not self._cancel.is_set():
+            state.result.coverage.traceroute = True
+        state.end()
+
+    def _security(self, state, hosts, ips, profile) -> None:
+        if not ips:
+            return
+        state.start("security")
+        before = state.failures
+        ports = profile.ports or "top100"
+        by_ip = {_norm_ip(ip): h for ip, h in hosts.items()}
+        for chunk in self._chunks(ips):
+            text = self._call(state, "security checks", "nse_safe",
+                              {"targets": chunk, "ports": ports,
+                               "scripts": list(NSE_ALLOWED)})
+            if text is None:
+                continue
+            try:
+                findings = parse_nse_findings(text)
+            except Exception as exc:
+                state.fail(f"security checks: {exc}")
+                continue
+            for finding in findings:
+                host = by_ip.get(_norm_ip(finding.host))
+                if host is not None:
+                    host.findings.append(finding)
+        if state.failures == before and not self._cancel.is_set():
+            state.result.coverage.security_checks = True
+        state.end()
+
+    def _run_tool(self, state, step: str, func, *args):
+        """Esegue una funzione di scoperta; (ok, valore). Gli errori diventano avvisi."""
+        if self._cancel.is_set():
+            raise _Cancelled()
+        try:
+            value = func(*args)
+        except ToolMissing as exc:
+            state.fail(f"{exc or step} not installed")
+            return False, None
+        except Exception as exc:
+            state.fail(f"{step}: {exc}" if str(exc) else f"{step}: {type(exc).__name__}")
+            return False, None
+        if self._cancel.is_set():
+            raise _Cancelled()
+        return True, value
+
+    @staticmethod
+    def _attach(state, hosts, found) -> None:
+        by_ip = {_norm_ip(ip): h for ip, h in hosts.items()}
+        state.result.discovered.extend(found)
+        for item in found:
+            host = by_ip.get(_norm_ip(item.ip))
+            if host is None:
+                continue
+            label = f"{item.kind}:{item.name}"
+            if label not in host.services and len(host.services) < MAX_SERVICES_PER_HOST:
+                host.services.append(label)
+
+    def _discover(self, state, hosts, kind: str, func) -> None:
+        state.start(kind)
+        ok, found = self._run_tool(state, kind, func)
+        if ok:
+            self._attach(state, hosts, found or [])
+            setattr(state.result.coverage, kind, True)
+        state.end()
+
+    def _snmp(self, state, hosts, ips, community) -> None:
+        if not ips:
+            return
+        state.start("snmp")
+        targets = ips[:MAX_SNMP_HOSTS]
+        complete = True
+        if len(ips) > len(targets):
+            state.fail(f"snmp: only the first {MAX_SNMP_HOSTS} hosts were queried")
+            complete = False
+        for ip in targets:
+            if self._cancel.is_set():
+                raise _Cancelled()
+            try:
+                found = self.tools.snmp(ip, community)
+            except ValueError:
+                # Messaggio fisso: la community non compare mai in avvisi o log.
+                state.fail("snmp: invalid community or address, step aborted")
+                complete = False
+                break
+            except Exception as exc:
+                state.fail(f"snmp: {type(exc).__name__}, step aborted")
+                complete = False
+                break
+            if self._cancel.is_set():
+                raise _Cancelled()
+            if found is not None:
+                self._attach(state, hosts, [found])
+        if complete:
+            state.result.coverage.snmp = True
         state.end()
 
 

@@ -1,12 +1,20 @@
+import logging
 import threading
+from pathlib import Path
 
 import pytest
 
+from landiscovery.discovery import DiscoveredService, ToolMissing
 from landiscovery.engine import (EngineError, ScanEngine, ScanOptions,
-                                 parse_arp_scan)
-from landiscovery.helper import HelperError
+                                 parse_arp_scan, read_default_gateway)
+from landiscovery.helper import NSE_ALLOWED, HelperError
+from landiscovery.models import Host
 from landiscovery.profiles import BUILTIN, Profile
 from landiscovery.runner import ScanCancelled
+
+FIXTURES = Path(__file__).parent / "fixtures"
+NSE_XML = (FIXTURES / "nmap_nse.xml").read_text()
+TRACE_XML = (FIXTURES / "nmap_traceroute.xml").read_text()
 
 ARP = (
     "Interface: eth0, type: EN10MB, MAC: aa:bb:cc:00:00:01, IPv4: 192.168.1.5\n"
@@ -40,8 +48,9 @@ def nmap_xml(*hosts):
 
 class FakeRunner:
     def __init__(self, arp=ARP, up=("192.168.1.1", "192.168.1.20"), fail=None,
-                 on_call=None):
+                 on_call=None, nse=NSE_XML, trace=TRACE_XML):
         self.arp, self.up, self.fail = arp, up, fail or {}
+        self.nse, self.trace = nse, trace
         self.calls = []
         self.cancelled = False
         self.resets = 0
@@ -71,6 +80,10 @@ class FakeRunner:
             return nmap_xml(*[(ip, [22, 80], "") for ip in params["targets"]])
         if op == "os_detect":
             return nmap_xml(*[(ip, [], "Linux 5.x") for ip in params["targets"]])
+        if op == "nse_safe":
+            return self.nse
+        if op == "traceroute":
+            return self.trace
         raise AssertionError(op)
 
     def ops(self):
@@ -86,8 +99,53 @@ FULL = BUILTIN["full"]
 QUICK = BUILTIN["quick"]
 
 
-def engine(runner=None, privileged=True):
-    return ScanEngine(runner=runner or FakeRunner(), oui=FakeOui(), privileged=privileged)
+class FakeTools:
+    def __init__(self, mdns=(), ssdp=(), snmp=None, gateway="192.168.1.1",
+                 raises=None, on_call=None):
+        self._mdns, self._ssdp, self._snmp = list(mdns), list(ssdp), snmp or {}
+        self._gateway = gateway
+        self.raises = raises or {}
+        self.on_call = on_call
+        self.calls = []
+
+    def _hit(self, name, *args):
+        self.calls.append((name, *args))
+        if self.on_call:
+            self.on_call(name)
+        if name in self.raises:
+            raise self.raises[name]
+
+    def mdns(self):
+        self._hit("mdns")
+        return list(self._mdns)
+
+    def ssdp(self):
+        self._hit("ssdp")
+        return list(self._ssdp)
+
+    def snmp(self, ip, community):
+        self._hit("snmp", ip, community)
+        return self._snmp.get(ip)
+
+    def gateway(self):
+        self.calls.append(("gateway",))
+        return self._gateway
+
+    def names(self):
+        return [c[0] for c in self.calls]
+
+
+def engine(runner=None, privileged=True, tools=None):
+    return ScanEngine(runner=runner or FakeRunner(), oui=FakeOui(),
+                      privileged=privileged, tools=tools or FakeTools())
+
+
+def svc(ip, kind="mdns", name="dev", detail=""):
+    return DiscoveredService(ip=ip, kind=kind, name=name, detail=detail)
+
+
+ALL = Profile("all", "top100", traceroute=True, mdns=True, ssdp=True, snmp=True,
+              security_checks=True)
 
 
 def test_parse_arp_scan():
@@ -199,7 +257,8 @@ def test_missing_nmap_raises_clear_error():
 def test_progress_callback_called():
     calls = []
     engine().scan(["192.168.1.0/24"], FULL, on_progress=lambda s, f: calls.append((s, f)))
-    assert [c[0] for c in calls] == ["discovery", "discovery", "ports", "ports", "os", "os"]
+    assert [c[0] for c in calls] == ["discovery", "discovery", "ports", "ports", "os", "os",
+                                     "mdns", "mdns", "ssdp", "ssdp"]
     fr = [c[1] for c in calls]
     assert fr[0] == 0.0 and fr[-1] == 1.0 and fr == sorted(fr)
 
@@ -243,8 +302,9 @@ def test_coverage_reflects_profile_and_privileges():
     c = res.coverage
     assert (c.profile, c.ports, c.targets) == ("full", "1-65535", ["192.168.1.0/24"])
     assert c.privileged and c.os_detect and c.service_detect
-    # passi non ancora collegati: mai dichiarati
-    assert not (c.mdns or c.ssdp or c.snmp or c.traceroute or c.security_checks)
+    # FULL chiede mdns e ssdp: dichiarati; il resto non è richiesto
+    assert c.mdns and c.ssdp
+    assert not (c.snmp or c.traceroute or c.security_checks)
     res = engine(privileged=False).scan(["192.168.1.0/24"], QUICK)
     assert not res.coverage.privileged and not res.coverage.os_detect
     assert res.coverage.ports == "top100" and not res.coverage.service_detect
@@ -351,3 +411,322 @@ def test_ipv6_target_skips_arp():
     r = FakeRunner(up=("fe80::1",))
     res = engine(r).scan(["fe80::/112"], BUILTIN["ping"])
     assert "arp_discover" not in r.ops() and [h.ip for h in res.hosts] == ["fe80::1"]
+
+
+# --- Task 9b: scoperta, NSE e topologia ------------------------------------------
+
+def node_ids(topo):
+    return {n.id for n in topo.nodes}
+
+
+def test_discovery_results_in_scanresult():
+    tools = FakeTools(mdns=[svc("192.168.1.20", "mdns", "printer")],
+                      ssdp=[svc("192.168.1.99", "ssdp", "tv")])
+    res = engine(tools=tools).scan(["192.168.1.0/24"], FULL)
+    assert [(d.kind, d.name) for d in res.discovered] == [("mdns", "printer"), ("ssdp", "tv")]
+    assert res.coverage.mdns and res.coverage.ssdp and res.complete
+
+
+def test_services_attached_to_matching_hosts_only():
+    tools = FakeTools(mdns=[svc("192.168.1.20", "mdns", "printer"),
+                            svc("192.168.1.20", "mdns", "printer")],
+                      ssdp=[svc("192.168.1.99", "ssdp", "tv")])
+    res = engine(tools=tools).scan(["192.168.1.0/24"], FULL)
+    by_ip = {h.ip: h for h in res.hosts}
+    assert by_ip["192.168.1.20"].services == ["mdns:printer"]
+    assert by_ip["192.168.1.1"].services == []
+    assert len(res.discovered) == 3  # l'host sconosciuto resta solo in discovered
+
+
+def test_services_capped_per_host():
+    many = [svc("192.168.1.20", "mdns", f"s{i}") for i in range(50)]
+    res = engine(tools=FakeTools(mdns=many)).scan(["192.168.1.0/24"], FULL)
+    h = [h for h in res.hosts if h.ip == "192.168.1.20"][0]
+    assert len(h.services) == 20 and h.services[0] == "mdns:s0"
+    assert len(res.discovered) == 50
+
+
+def test_missing_avahi_warns_and_marks_incomplete():
+    tools = FakeTools(raises={"mdns": ToolMissing("avahi-browse")})
+    res = engine(tools=tools).scan(["192.168.1.0/24"], FULL)
+    assert any("avahi-browse not installed" in w for w in res.warnings)
+    assert res.status == "done" and not res.complete
+    assert not res.coverage.mdns and res.coverage.ssdp
+    assert [h.ip for h in res.hosts] == ["192.168.1.1", "192.168.1.20"]
+
+
+def test_step_failure_does_not_stop_later_steps():
+    tools = FakeTools(raises={"mdns": OSError("boom")}, ssdp=[svc("192.168.1.20", "ssdp", "tv")],
+                      snmp={"192.168.1.20": svc("192.168.1.20", "snmp", "sw")})
+    prof = Profile("p", "top100", mdns=True, ssdp=True, snmp=True)
+    res = engine(tools=tools).scan(["192.168.1.0/24"], prof, ScanOptions(snmp_community="public"))
+    assert any(w.startswith("mdns") for w in res.warnings) and not res.complete
+    assert not res.coverage.mdns and res.coverage.ssdp and res.coverage.snmp
+    assert {d.kind for d in res.discovered} == {"ssdp", "snmp"}
+
+
+def test_failed_runner_step_does_not_stop_later_steps():
+    r = FakeRunner(fail={"traceroute": HelperError("nope")})
+    tools = FakeTools(mdns=[svc("192.168.1.20")])
+    res = engine(r, tools=tools).scan(["192.168.1.0/24"], ALL, ScanOptions(snmp_community="x"))
+    assert any("traceroute" in w and "nope" in w for w in res.warnings)
+    assert not res.coverage.traceroute and res.coverage.security_checks
+    assert res.coverage.mdns and res.coverage.ssdp and res.coverage.snmp
+    assert res.topology is not None and not res.complete
+
+
+def test_nse_findings_attached_to_hosts():
+    r = FakeRunner()
+    res = engine(r).scan(["192.168.1.0/24"], BUILTIN["security"])
+    by_ip = {h.ip: h for h in res.hosts}
+    assert by_ip["192.168.1.20"].findings
+    assert all(f.host == "192.168.1.20" for f in by_ip["192.168.1.20"].findings)
+    assert by_ip["192.168.1.1"].findings == []
+    assert res.coverage.security_checks and res.complete
+    call = [c for c in r.calls if c[0] == "nse_safe"]
+    assert len(call) == 1
+    assert call[0][1]["scripts"] == list(NSE_ALLOWED)
+    assert call[0][1]["ports"] == "top100"
+    assert call[0][1]["targets"] == ["192.168.1.1", "192.168.1.20"]
+
+
+def test_findings_for_unknown_host_ignored():
+    res = engine(FakeRunner(arp="", up=("192.168.1.1",))).scan(
+        ["192.168.1.0/24"], BUILTIN["security"])
+    assert [h.ip for h in res.hosts] == ["192.168.1.1"]
+    assert res.hosts[0].findings == [] and res.coverage.security_checks
+
+
+def test_nse_ports_fallback_to_top100_and_explicit_kept():
+    r = FakeRunner()
+    engine(r).scan(["192.168.1.0/24"], Profile("s", "", security_checks=True))
+    assert [c for c in r.calls if c[0] == "nse_safe"][0][1]["ports"] == "top100"
+    r = FakeRunner()
+    engine(r).scan(["192.168.1.0/24"], Profile("s", "22,80", security_checks=True))
+    assert [c for c in r.calls if c[0] == "nse_safe"][0][1]["ports"] == "22,80"
+
+
+def test_nse_works_in_reduced_mode():
+    r = FakeRunner()
+    res = engine(r, privileged=False).scan(["192.168.1.0/24"], BUILTIN["security"])
+    assert "nse_safe" in r.ops() and res.coverage.security_checks
+
+
+def test_nse_failure_marks_incomplete_without_coverage():
+    r = FakeRunner(fail={"nse_safe": HelperError("bad")})
+    res = engine(r).scan(["192.168.1.0/24"], BUILTIN["security"])
+    assert not res.coverage.security_checks and not res.complete
+    assert any("security checks" in w for w in res.warnings)
+
+
+def test_nse_bad_xml_is_a_warning():
+    res = engine(FakeRunner(nse="<nmaprun><host>")).scan(
+        ["192.168.1.0/24"], BUILTIN["security"])
+    assert not res.coverage.security_checks and not res.complete and res.status == "done"
+
+
+def test_topology_inferred_from_traceroute():
+    r = FakeRunner()
+    prof = Profile("t", "top100", traceroute=True)
+    res = engine(r).scan(["192.168.1.0/24"], prof)
+    assert "traceroute" in r.ops() and res.coverage.traceroute and res.complete
+    topo = res.topology
+    assert topo.inferred
+    ids = node_ids(topo)
+    assert {"192.168.1.1", "10.0.0.1", "10.0.1.1"} <= ids
+    kinds = {n.id: n.kind for n in topo.nodes}
+    assert kinds["192.168.1.1"] == "gateway" and kinds["10.0.0.1"] == "router"
+    call = [c for c in r.calls if c[0] == "traceroute"][0]
+    assert call[1] == {"targets": ["192.168.1.1", "192.168.1.20"]}
+
+
+def test_star_topology_when_no_traceroute():
+    r = FakeRunner()
+    res = engine(r).scan(["192.168.1.0/24"], QUICK)
+    assert "traceroute" not in r.ops() and not res.coverage.traceroute
+    topo = res.topology
+    assert topo is not None and topo.inferred
+    assert {n.id for n in topo.nodes if n.kind == "gateway"} == {"192.168.1.1"}
+    assert len(topo.edges) == 1 and "00:11:32:AA:BB:CC" in node_ids(topo)
+
+
+def test_gateway_unknown_gives_virtual_gateway():
+    res = engine(tools=FakeTools(gateway=None)).scan(["192.168.1.0/24"], QUICK)
+    gws = [n for n in res.topology.nodes if n.kind == "gateway"]
+    assert [n.id for n in gws] == ["gateway"]
+    assert len(res.topology.edges) == 2
+
+
+def test_gateway_error_is_tolerated():
+    class Bad(FakeTools):
+        def gateway(self):
+            raise OSError("x")
+
+    res = engine(tools=Bad()).scan(["192.168.1.0/24"], QUICK)
+    assert res.topology is not None and res.status == "done"
+
+
+def test_reduced_mode_skips_traceroute_with_warning():
+    r = FakeRunner()
+    res = engine(r, privileged=False).scan(
+        ["192.168.1.0/24"], Profile("t", "top100", traceroute=True))
+    assert "traceroute" not in r.ops() and not res.coverage.traceroute
+    assert any("traceroute" in w and "reduced" in w for w in res.warnings)
+    assert res.topology is not None  # stella
+
+
+def test_zero_hosts_gateway_only_topology_and_no_host_steps():
+    r = FakeRunner(arp="", up=())
+    tools = FakeTools(mdns=[svc("192.168.1.9")])
+    res = engine(r, tools=tools).scan(["192.168.1.0/24"], ALL, ScanOptions(snmp_community="x"))
+    assert res.hosts == [] and res.status == "done"
+    assert not ({"nse_safe", "traceroute"} & set(r.ops()))
+    assert "snmp" not in tools.names()
+    assert [n.kind for n in res.topology.nodes] == ["gateway"] and res.topology.edges == []
+    assert not (res.coverage.traceroute or res.coverage.security_checks or res.coverage.snmp)
+    assert res.coverage.mdns and res.coverage.ssdp
+
+
+def test_chunked_targets_for_traceroute_and_nse():
+    from landiscovery.helper import MAX_TARGETS
+    ips = tuple(f"10.1.{i // 250}.{i % 250 + 1}" for i in range(MAX_TARGETS + 5))
+    r = FakeRunner(arp="", up=ips, nse="<nmaprun/>", trace="<nmaprun/>")
+    res = engine(r).scan(["10.1.0.0/16"], Profile("t", "top100", traceroute=True,
+                                                    security_checks=True))
+    for op in ("traceroute", "nse_safe"):
+        sizes = [len(c[1]["targets"]) for c in r.calls if c[0] == op]
+        assert sorted(sizes) == [5, MAX_TARGETS]
+    assert res.coverage.traceroute and res.coverage.security_checks
+
+
+def test_snmp_queries_hosts_with_community():
+    tools = FakeTools(snmp={"192.168.1.20": svc("192.168.1.20", "snmp", "switch", "descr")})
+    prof = Profile("p", "top100", snmp=True)
+    res = engine(tools=tools).scan(["192.168.1.0/24"], prof, ScanOptions(snmp_community="lan"))
+    assert [c[1:] for c in tools.calls if c[0] == "snmp"] == [
+        ("192.168.1.1", "lan"), ("192.168.1.20", "lan")]
+    assert res.coverage.snmp and res.complete  # nessuna risposta non è un errore
+    assert [d.name for d in res.discovered] == ["switch"]
+    h = [h for h in res.hosts if h.ip == "192.168.1.20"][0]
+    assert h.services == ["snmp:switch"]
+
+
+def test_snmp_skipped_without_community_with_warning():
+    tools = FakeTools()
+    prof = Profile("p", "top100", snmp=True)
+    for opts in (None, ScanOptions(), ScanOptions(snmp_community="")):
+        res = engine(tools=tools).scan(["192.168.1.0/24"], prof, opts)
+        assert "snmp" not in tools.names()
+        assert "snmp community not provided" in res.warnings
+        assert not res.complete and not res.coverage.snmp and res.status == "done"
+
+
+def test_snmp_not_requested_ignores_community():
+    tools = FakeTools()
+    res = engine(tools=tools).scan(["192.168.1.0/24"], QUICK, ScanOptions(snmp_community="x"))
+    assert "snmp" not in tools.names() and not res.coverage.snmp and res.complete
+
+
+def test_snmp_invalid_community_aborts_without_echo():
+    secret = "s3cr3t community!"
+    tools = FakeTools(raises={"snmp": ValueError(f"bad {secret}")})
+    prof = Profile("p", "top100", snmp=True)
+    res = engine(tools=tools).scan(["192.168.1.0/24"], prof, ScanOptions(snmp_community=secret))
+    assert [c[0] for c in tools.calls].count("snmp") == 1  # il passo si ferma
+    assert any(w.startswith("snmp") for w in res.warnings)
+    assert secret not in " ".join(res.warnings) and "s3cr3t" not in " ".join(res.warnings)
+    assert not res.coverage.snmp and not res.complete
+
+
+def test_snmp_capped_at_256_hosts():
+    ips = tuple(f"10.2.{i // 250}.{i % 250 + 1}" for i in range(300))
+    tools = FakeTools()
+    r = FakeRunner(arp="", up=ips)
+    res = engine(r, tools=tools).scan(["10.2.0.0/16"], Profile("p", "", snmp=True),
+                                      ScanOptions(snmp_community="c"))
+    assert tools.names().count("snmp") == 256
+    assert any("256" in w for w in res.warnings) and not res.coverage.snmp
+
+
+def test_community_never_in_runner_args_or_logs(caplog):
+    secret = "zz-secret-comm"
+    tools = FakeTools(raises={"ssdp": OSError("net down")})
+    r = FakeRunner(fail={"nse_safe": HelperError("bad")})
+    with caplog.at_level(logging.DEBUG):
+        res = engine(r, tools=tools).scan(["192.168.1.0/24"], ALL,
+                                          ScanOptions(snmp_community=secret),
+                                          on_progress=lambda s, f: None)
+    assert secret not in repr(r.calls)
+    assert secret not in caplog.text
+    assert secret not in repr(res.warnings)
+    assert secret not in repr(res.discovered)
+
+
+def test_cancel_during_discovery_stops_all_steps():
+    eng_box = []
+
+    def on_call(name):
+        if name == "mdns":
+            eng_box[0].cancel()
+
+    tools = FakeTools(on_call=on_call, mdns=[svc("192.168.1.20")])
+    eng = engine(tools=tools)
+    eng_box.append(eng)
+    res = eng.scan(["192.168.1.0/24"], ALL, ScanOptions(snmp_community="c"))
+    assert res.status == "cancelled" and not res.complete
+    assert "ssdp" not in tools.names() and "snmp" not in tools.names()
+    assert not res.coverage.mdns and not res.coverage.ssdp and not res.coverage.snmp
+    assert res.coverage.security_checks and res.coverage.traceroute  # già conclusi
+    assert [h.ip for h in res.hosts] == ["192.168.1.1", "192.168.1.20"]
+
+
+def test_cancel_before_ssdp_skips_blocking_call():
+    tools = FakeTools()
+    eng = engine(tools=tools)
+    eng.runner.on_call = lambda op, params: eng.cancel() if op == "nse_safe" else None
+    prof = Profile("p", "top100", security_checks=True, mdns=True, ssdp=True)
+    res = eng.scan(["192.168.1.0/24"], prof)
+    assert res.status == "cancelled"
+    assert "mdns" not in tools.names()
+    assert "ssdp" not in tools.names()
+
+
+def test_cancel_during_traceroute_keeps_hosts_and_star():
+    eng = engine()
+    eng.runner.on_call = lambda op, params: eng.cancel() if op == "traceroute" else None
+    res = eng.scan(["192.168.1.0/24"], Profile("t", "top100", traceroute=True,
+                                                security_checks=True))
+    assert res.status == "cancelled" and not res.coverage.traceroute
+    assert not res.coverage.security_checks
+    assert len(res.hosts) == 2 and res.topology is not None
+
+
+def test_progress_includes_new_steps_in_order():
+    calls = []
+    engine().scan(["192.168.1.0/24"], ALL, ScanOptions(snmp_community="c"),
+                  on_progress=lambda s, f: calls.append((s, f)))
+    names = []
+    for n, _ in calls:
+        if n not in names:
+            names.append(n)
+    assert names == ["discovery", "ports", "traceroute", "security", "mdns", "ssdp", "snmp"]
+    fr = [c[1] for c in calls]
+    assert fr == sorted(fr) and fr[-1] == 1.0
+
+
+def test_default_tools_are_used_when_none_given():
+    eng = ScanEngine(runner=FakeRunner(), oui=FakeOui(), privileged=True)
+    assert all(hasattr(eng.tools, n) for n in ("mdns", "ssdp", "snmp", "gateway"))
+
+
+def test_read_default_gateway(tmp_path):
+    route = tmp_path / "route"
+    route.write_text(
+        "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+        "eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
+        "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n")
+    assert read_default_gateway(str(route)) == "192.168.1.1"
+    assert read_default_gateway(str(tmp_path / "missing")) is None
+    bad = tmp_path / "bad"
+    bad.write_text("garbage\n\x00\xff")
+    assert read_default_gateway(str(bad)) is None

@@ -1,10 +1,11 @@
+import time
 from pathlib import Path
 
 import pytest
 
 from landiscovery.models import Edge, Host, Topology
 from landiscovery.nmapxml import ScanParseError
-from landiscovery.topology import build_topology, parse_traceroute
+from landiscovery.topology import MAX_HOPS, build_topology, parse_traceroute
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -25,7 +26,7 @@ def test_parse_traceroute_hops():
     hops = parse_traceroute(load("nmap_traceroute.xml"))
     assert hops["192.168.1.20"] == ["192.168.1.1", "10.0.0.1", "10.0.1.1"]
     assert hops["192.168.1.30"] == ["192.168.1.1"]
-    assert "192.168.1.40" not in hops or hops["192.168.1.40"] == []
+    assert "192.168.1.40" not in hops
 
 
 def test_parse_non_numeric_ttl_keeps_document_order():
@@ -188,3 +189,61 @@ def test_empty_host_list_gateway_only():
 def test_topology_always_marked_inferred():
     assert build_topology([], {}, None).inferred is True
     assert build_topology([Host(ip="10.0.0.2")], {}, "10.0.0.1").inferred is True
+
+
+def _big_xml(n):
+    hops = "".join(
+        f'<hop ttl="{i}" ipaddr="10.{(i >> 16) & 255}.{(i >> 8) & 255}.{i & 255}"/>'
+        for i in range(1, n + 1))
+    return ('<nmaprun><host><address addr="192.168.1.9" addrtype="ipv4"/>'
+            f'<trace>{hops}</trace></host></nmaprun>')
+
+
+def test_huge_trace_is_fast_and_capped():
+    t0 = time.monotonic()
+    hops = parse_traceroute(_big_xml(100_000))
+    assert time.monotonic() - t0 < 2
+    chain = hops["192.168.1.9"]
+    assert len(chain) == MAX_HOPS == 64
+    assert chain[0] == "10.0.0.1"
+    t0 = time.monotonic()
+    raw = [f"10.{(i >> 16) & 255}.{(i >> 8) & 255}.{i & 255}"
+           for i in range(1, 100_001)]
+    t = build_topology([Host(ip="192.168.1.9")], {"192.168.1.9": raw}, None)
+    assert time.monotonic() - t0 < 2
+    assert len(t.nodes) == 64 + 1
+
+
+def test_uppercase_ipv6_host_matches_hops():
+    h = Host(ip="2001:DB8:0:0:0:0:0:10")
+    t = build_topology([h], {"2001:db8::10": ["2001:db8::1", "2001:db8::2"]},
+                       "2001:DB8::1")
+    n = nodes(t)
+    assert [x.kind for x in t.nodes] == ["gateway", "router", "host"]
+    assert n["2001:db8::2"].kind == "router"
+    assert edges(t) == {("2001:db8::1", "2001:db8::2"),
+                        ("2001:DB8:0:0:0:0:0:10", "2001:db8::2")}
+
+
+def test_host_with_mac_that_is_hop_merges_without_dangling_edges():
+    router = Host(ip="192.168.1.50", mac="AA:BB:CC:00:00:01")
+    far = Host(ip="172.16.0.5")
+    t = build_topology([router, far],
+                       {"172.16.0.5": ["192.168.1.1", "192.168.1.50"]},
+                       "192.168.1.1")
+    n = nodes(t)
+    assert n["AA:BB:CC:00:00:01"].kind == "router"
+    assert "192.168.1.50" not in n
+    assert len(t.nodes) == 3
+    for e in t.edges:
+        assert e.a in n and e.b in n
+    assert edges(t) == {("192.168.1.1", "AA:BB:CC:00:00:01"),
+                        ("172.16.0.5", "AA:BB:CC:00:00:01")}
+
+
+def test_gateway_vote_tie_uses_numeric_order():
+    hosts = [Host(ip="172.16.0.5"), Host(ip="172.16.0.6")]
+    hops = {"172.16.0.5": ["10.0.0.9"], "172.16.0.6": ["10.0.0.10"]}
+    n = nodes(build_topology(hosts, hops, None))
+    assert n["10.0.0.9"].kind == "gateway"
+    assert n["10.0.0.10"].kind == "router"

@@ -49,6 +49,7 @@ CATALOG = {
     "Traceroute": "Traceroute",
     "Wake on LAN": "Riattiva via rete",
     "Copy IP": "Copia IP",
+    "Map": "Mappa",
 }
 
 _language = "en"

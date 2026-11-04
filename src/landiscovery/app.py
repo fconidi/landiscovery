@@ -13,6 +13,7 @@ from .actions import build_action, copy_value, wake_on_lan
 from .compare import compare_scans
 from .export import export_csv, export_html, export_json
 from .i18n import _, set_language
+from .mapview import MapView
 from .models import ScanResult
 from .profiles import ProfileStore, default_profiles_path
 from .store import Store
@@ -258,6 +259,22 @@ def main() -> int:
             scroll.add(findings)
             security.pack_start(scroll, True, True, 0)
 
+            map_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            self.stack.add_titled(map_page, "map", _("Map"))
+            self.map_view = MapView(on_select=self._select_map_host)
+            map_page.pack_start(self.map_view, True, True, 0)
+
+        def _select_map_host(self, node_id):
+            host = next((h for h in self.model.rows if h.key == node_id or h.ip == node_id),
+                        None)
+            if host is None:
+                return
+            for row in self.table_store:
+                if row[0] == host.ip:
+                    self.tree.get_selection().select_iter(row.iter)
+                    self.stack.set_visible_child_name("scan")
+                    break
+
         def _selected_scan_id(self):
             model, tree_iter = self.history_table.get_selection().get_selected()
             return model[tree_iter][0] if tree_iter is not None else None
@@ -455,6 +472,7 @@ def main() -> int:
             for finding in sorted_findings(result):
                 self.finding_store.append((finding.severity, finding.host,
                                            finding.title, finding.detail))
+            self.map_view.set_topology(result.topology)
             self.status.set_text((_("Scan cancelled") if result.status == "cancelled"
                                   else _("Scan failed") if result.status == "failed"
                                   else _("No hosts found") if not result.hosts

@@ -304,7 +304,7 @@ def main() -> int:
             model, tree_iter = self.history_table.get_selection().get_selected()
             return model[tree_iter][0] if tree_iter is not None else None
 
-        def _refresh_history(self, *_):
+        def _refresh_history(self, *_args):
             summaries = self.store.list_scans()
             self.history_store.clear()
             self.old_scan.remove_all()
@@ -323,18 +323,18 @@ def main() -> int:
                 self.device_store.append((device.key, device.name, device.note,
                                           ", ".join(device.tags)))
 
-        def _load_history_scan(self, tree, path, *_):
+        def _load_history_scan(self, tree, path, *_args):
             scan_id = tree.get_model()[path][0]
             self._show_result(self.store.get_scan(scan_id))
             self.stack.set_visible_child_name("scan")
 
-        def _delete_selected(self, *_):
+        def _delete_selected(self, *_args):
             scan_id = self._selected_scan_id()
             if scan_id is not None and self._confirm(f"Delete scan {scan_id}?"):
                 self.store.delete_scan(scan_id)
                 self._refresh_history()
 
-        def _export_selected(self, *_):
+        def _export_selected(self, *_args):
             scan_id = self._selected_scan_id()
             if scan_id is None:
                 return
@@ -353,7 +353,7 @@ def main() -> int:
                     self._message(str(exc))
             dialog.destroy()
 
-        def _compare_selected(self, *_):
+        def _compare_selected(self, *_args):
             old, new = self.old_scan.get_active_id(), self.new_scan.get_active_id()
             if old is None or new is None:
                 return
@@ -367,7 +367,7 @@ def main() -> int:
                 self.diff_store.append((_(row.state.title()), row.ip, row.hostname,
                                         row.detail))
 
-        def _save_device(self, *_):
+        def _save_device(self, *_args):
             values = {name: entry.get_text().strip()
                       for name, entry in self.device_entries.items()}
             if not values["Key"]:
@@ -378,7 +378,7 @@ def main() -> int:
                                    if tag.strip()])
             self._refresh_history()
 
-        def _edit_device(self, tree, path, *_):
+        def _edit_device(self, tree, path, *_args):
             row = tree.get_model()[path]
             for entry, value in zip(self.device_entries.values(), row):
                 entry.set_text(value)
@@ -406,7 +406,7 @@ def main() -> int:
             dialog.destroy()
             return accepted
 
-        def start_scan(self, *_):
+        def start_scan(self, *_args):
             try:
                 networks = parse_targets(self.targets.get_text())
             except TargetError as exc:
@@ -462,7 +462,7 @@ def main() -> int:
             self.progress.set_fraction(fraction)
             return False
 
-        def cancel_scan(self, *_):
+        def cancel_scan(self, *_args):
             self.cancel_button.set_sensitive(False)
             if self.engine:
                 threading.Thread(target=self.engine.cancel, daemon=True).start()

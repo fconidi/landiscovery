@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap --traceroute -oX - 192.168.1.0/24" version="7.94">
+<host><status state="up" reason="arp-response"/>
+<address addr="192.168.1.20" addrtype="ipv4"/>
+<trace proto="tcp" port="80">
+<hop ttl="1" ipaddr="192.168.1.1" rtt="0.45" host="router.lan"/>
+<hop ttl="2" ipaddr="10.0.0.1" rtt="4.10"/>
+<hop ttl="3" rtt="5.00"/>
+<hop ttl="4" ipaddr="10.0.1.1" rtt="6.20"/>
+<hop ttl="5" ipaddr="192.168.1.20" rtt="7.00"/>
+</trace>
+</host>
+<host><status state="up" reason="arp-response"/>
+<address addr="192.168.1.30" addrtype="ipv4"/>
+<trace proto="tcp" port="443">
+<hop ttl="1" ipaddr="192.168.1.1" rtt="0.40"/>
+<hop ttl="2" ipaddr="192.168.1.1" rtt="0.41"/>
+<hop ttl="3" ipaddr="192.168.1.30" rtt="1.00"/>
+</trace>
+</host>
+<host><status state="up" reason="arp-response"/>
+<address addr="192.168.1.40" addrtype="ipv4"/>
+</host>
+</nmaprun>

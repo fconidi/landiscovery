@@ -1,0 +1,142 @@
+"""Topologia di rete dedotta dai dati di traceroute di nmap."""
+from __future__ import annotations
+
+import ipaddress
+import xml.etree.ElementTree as ET
+from collections import Counter
+
+from .models import Edge, Host, Node, Topology
+from .nmapxml import ScanParseError, reject_entities
+
+_KIND_ORDER = {"gateway": 0, "router": 1, "host": 2}
+VIRTUAL_GATEWAY = "gateway"
+
+
+def _norm(addr: str | None) -> str | None:
+    """Indirizzo IPv4/IPv6 normalizzato, senza zona; None se non valido."""
+    if not addr:
+        return None
+    addr = addr.strip().split("%", 1)[0]
+    try:
+        return str(ipaddress.ip_address(addr))
+    except ValueError:
+        return None
+
+
+def _subnet(addr: str) -> str:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return ""
+    prefix = 24 if ip.version == 4 else 64
+    return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+
+
+def parse_traceroute(xml_text: str) -> dict[str, list[str]]:
+    """Per ogni host, gli indirizzi intermedi del traceroute in ordine."""
+    if not xml_text or not xml_text.strip():
+        raise ScanParseError("XML di nmap vuoto")
+    reject_entities(xml_text)
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ScanParseError(f"XML di nmap non valido: {exc}") from exc
+    result: dict[str, list[str]] = {}
+    for host in root.iter("host"):
+        target = None
+        for addr in host.findall("address"):
+            if addr.get("addrtype") in ("ipv4", "ipv6"):
+                target = _norm(addr.get("addr"))
+                if target:
+                    break
+        trace = host.find("trace")
+        if target is None or trace is None:
+            continue
+        chain: list[str] = []
+        for hop in trace.findall("hop"):
+            ip = _norm(hop.get("ipaddr"))
+            if ip is None or ip == target or ip in chain:
+                continue
+            chain.append(ip)
+        result[target] = chain
+    return result
+
+
+def _infer_gateway(hops: dict[str, list[str]]) -> str | None:
+    firsts = Counter(h[0] for h in hops.values() if h)
+    if not firsts:
+        return None
+    best = max(firsts.values())
+    return min(a for a, n in firsts.items() if n == best)
+
+
+def build_topology(hosts: list[Host], hops: dict[str, list[str]],
+                   gateway: str | None) -> Topology:
+    """Costruisce il grafo gateway -> router -> host; stella senza traceroute."""
+    gw_ip = _norm(gateway) if gateway else None
+    if gw_ip is None:
+        gw_ip = _infer_gateway(hops)
+    gw_id = gw_ip if gw_ip else VIRTUAL_GATEWAY
+
+    by_ip = {h.ip: h for h in hosts}
+    nodes: dict[str, Node] = {}
+    edges: set[tuple[str, str]] = set()
+
+    gw_host = by_ip.get(gw_ip) if gw_ip else None
+    nodes[gw_id] = Node(
+        id=gw_id,
+        label=(gw_host.hostname or gw_ip) if gw_host and gw_ip else
+        ("Gateway" if gw_ip is None else gw_ip),
+        kind="gateway",
+        subnet=_subnet(gw_ip) if gw_ip else "",
+    )
+
+    def node_id(ip: str) -> str:
+        if ip == gw_ip:
+            return gw_id
+        h = by_ip.get(ip)
+        return h.key if h else ip
+
+    def link(a: str, b: str) -> None:
+        if a != b:
+            edges.add((a, b) if a < b else (b, a))
+
+    router_ids: set[str] = set()
+    for host in sorted(hosts, key=lambda h: h.key):
+        hid = node_id(host.ip)
+        chain: list[str] = []
+        for raw in hops.get(host.ip, []):
+            ip = _norm(raw)
+            if ip is None or ip == host.ip or ip in chain:
+                continue
+            chain.append(ip)
+        prev = gw_id
+        for ip in chain:
+            nid = node_id(ip)
+            if nid != gw_id:
+                router_ids.add(nid)
+                if nid not in nodes:
+                    h = by_ip.get(ip)
+                    nodes[nid] = Node(id=nid,
+                                      label=(h.hostname if h and h.hostname
+                                             else ip),
+                                      kind="router", subnet=_subnet(ip))
+            link(prev, nid)
+            prev = nid
+        if hid != gw_id:
+            link(prev, hid)
+
+    for host in hosts:
+        hid = node_id(host.ip)
+        if hid in nodes:
+            continue
+        nodes[hid] = Node(id=hid, label=host.hostname or host.ip,
+                          kind="host", subnet=_subnet(host.ip))
+    for rid in router_ids:
+        nodes[rid].kind = "router"
+
+    ordered = sorted(nodes.values(),
+                     key=lambda n: (_KIND_ORDER[n.kind], n.id))
+    return Topology(nodes=ordered,
+                    edges=[Edge(a, b) for a, b in sorted(edges)],
+                    inferred=True)

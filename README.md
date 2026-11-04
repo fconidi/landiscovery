@@ -8,10 +8,13 @@ prove cabling.
 
 ## Install
 
-Install the Debian package with `sudo apt install ./landiscovery_1.0.0_all.deb`.
-The graphical application appears in the Network menu. Run `landiscovery gui`
-or `lds gui` from a terminal. The package requires Python 3.11 or newer, GTK 3,
-Nmap, arp-scan and polkit. Avahi tools and SNMP tools enable optional discovery.
+Install from the [SysLinuxOS-Tools APT repository](https://github.com/fconidi/SysLinuxOS-Tools)
+with `sudo apt install landiscovery`, or install the release package with
+`sudo apt install ./landiscovery_1.0.2_all.deb`.
+The graphical application appears in the SysLinuxOS Tools and Networking menus.
+Run `landiscovery gui` or `lds gui` from a terminal. The package requires
+Python 3.11 or newer, GTK 3, Nmap, arp-scan and polkit. Avahi tools and SNMP
+tools enable optional discovery.
 
 ## Scan
 

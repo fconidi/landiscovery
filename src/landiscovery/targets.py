@@ -10,6 +10,7 @@ REASON_PUBLIC = "target outside private address ranges"
 REASON_WIDE_V4 = "IPv4 network wider than /16"
 REASON_WIDE_V6 = "IPv6 network wider than /112 is not allowed"
 
+_ALLOWED = re.compile(r"^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$")
 _SEPARATORS = re.compile(r"[,\s]+")
 _PRIVATE_V4 = [ipaddress.ip_network(n) for n in
                ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
@@ -35,7 +36,7 @@ def parse_targets(text: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Netwo
         raise TargetError("no target given")
     nets = []
     for tok in tokens:
-        if tok.startswith("-"):
+        if tok.startswith("-") or not _ALLOWED.match(tok):
             raise TargetError(f"invalid target: {tok!r}")
         try:
             nets.append(ipaddress.ip_network(tok, strict=False))

@@ -16,7 +16,7 @@ def test_parse_ignores_empty_tokens():
     assert len(parse_targets("10.0.0.1,, 10.0.0.2 ,")) == 2
 
 
-@pytest.mark.parametrize("text", ["1.2.3.4; rm", "1.2.3.4;rm", "$(id)", "1.2.3.4|x", "a b"])
+@pytest.mark.parametrize("text", ["1.2.3.4; rm", "1.2.3.4;rm", "$(id)", "1.2.3.4|x", "1.2.3.4 ;rm", "1.2.3.4`id`"])
 def test_parse_rejects_shell_chars(text):
     with pytest.raises(TargetError):
         parse_targets(text)
@@ -57,3 +57,28 @@ def test_ipv6_slash64_not_allowed():
 
 def test_ipv6_slash112_allowed():
     assert check_scope(parse_targets("fd00::/112")).allowed
+
+
+@pytest.mark.parametrize("text", [
+    "fe80::1%eth0", "fe80::1%$(id)", "fe80::1%-sS", "fe80::1%a;b",
+    "10.0.0.0/255.0.0.0", "1.2.3.4/33",
+])
+def test_parse_rejects_zone_ids_netmasks_bad_prefix(text):
+    with pytest.raises(TargetError):
+        parse_targets(text)
+
+
+def test_ipv4_prefix_boundaries():
+    for t in ("10.0.0.0/16", "10.0.0.0/17"):
+        assert not check_scope(parse_targets(t)).needs_confirmation
+    assert check_scope(parse_targets("10.0.0.0/15")).needs_confirmation
+
+
+def test_default_route_needs_confirmation():
+    r = check_scope(parse_targets("0.0.0.0/0"))
+    assert r.allowed and r.needs_confirmation
+
+
+def test_mixed_private_and_public_needs_confirmation():
+    r = check_scope(parse_targets("192.168.1.0/24,8.8.8.8"))
+    assert r.allowed and r.needs_confirmation and r.reasons

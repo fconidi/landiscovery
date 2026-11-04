@@ -1,0 +1,10 @@
++;eth0;IPv4;Stampante\032Ufficio;_ipp._tcp;local
++;eth0;IPv6;Stampante\032Ufficio;_ipp._tcp;local
+-;eth0;IPv4;Vecchio\032Servizio;_http._tcp;local
+=;eth0;IPv4;Stampante\032Ufficio;_ipp._tcp;local;stampante.local;192.168.1.20;631;"rp=ipp/print" "ty=Brother HL-L2350DW"
+=;eth0;IPv6;Stampante\032Ufficio;_ipp._tcp;local;stampante.local;fe80::2a0:c9ff:fe12:3456%eth0;631;"rp=ipp/print"
+=;eth0;IPv6;Stampante\032Ufficio;_ipp._tcp;local;stampante.local;2001:db8::20;631;"rp=ipp/print"
+=;eth0;IPv4;Stampante\032Ufficio;_ipp._tcp;local;stampante.local;192.168.1.20;631;"rp=ipp/print" "ty=Brother HL-L2350DW"
+=;eth0;IPv4;Chromecast\032Salotto;_googlecast._tcp;local;Chromecast-1234.local;192.168.1.31;8009;"id=abcdef" "fn=Salotto; TV"
+=;eth0;IPv4;NAS;_smb._tcp;local;nas.local;not-an-address;445;
+=;eth0;IPv4;Troncata;_smb._tcp;local

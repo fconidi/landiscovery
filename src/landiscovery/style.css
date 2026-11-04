@@ -1,0 +1,2 @@
+/* Native GTK widgets retain the current desktop theme. */
+treeview.view { padding: 3px; }

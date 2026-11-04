@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- Add LAN Discovery to the SysLinuxOS Tools and Networking application menus.
+
 ## 1.0.1
 
 - Refine the GTK interface with clearer navigation, scan controls and empty states.

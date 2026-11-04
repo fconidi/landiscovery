@@ -48,6 +48,8 @@ def main(argv=None) -> int:
                 "usr/share/polkit-1/actions/org.syslinuxos.landiscovery.policy")
         install(source / "packaging/org.syslinuxos.landiscovery.desktop",
                 "usr/share/applications/org.syslinuxos.landiscovery.desktop")
+        install(source / "packaging/org.syslinuxos.landiscovery.menu",
+                "etc/xdg/menus/applications-merged/org.syslinuxos.landiscovery.menu")
         install(package / "icon.svg",
                 "usr/share/icons/hicolor/scalable/apps/org.syslinuxos.landiscovery.svg")
         for name in ("README.md", "CHANGELOG.md", "LICENSE"):

@@ -9,6 +9,6 @@ Comment[it]=Trova host, servizi e percorsi di rete inferiti
 Exec=landiscovery gui
 Icon=org.syslinuxos.landiscovery
 Terminal=false
-Categories=Network;X-SysLinuxOS-Tools;
+Categories=Network;X-SysLinuxOS-Networking;
 Keywords=network;scan;hosts;services;map;
 StartupNotify=true

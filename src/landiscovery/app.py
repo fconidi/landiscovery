@@ -10,11 +10,14 @@ from pathlib import Path
 
 from .engine import ScanEngine, ScanOptions
 from .actions import build_action, copy_value, wake_on_lan
+from .compare import compare_scans
+from .export import export_csv, export_html, export_json
 from .i18n import _, set_language
 from .models import ScanResult
 from .profiles import ProfileStore, default_profiles_path
 from .store import Store
 from .targets import TargetError, check_scope, parse_targets
+from .views import DiffRows, sorted_findings
 
 COLUMNS = ("IP", "Hostname", "MAC", "Vendor", "Latency", "Ports", "Services", "OS")
 
@@ -78,9 +81,16 @@ def main() -> int:
             self.profiles = ProfileStore(default_profiles_path()).load()
             self.store = Store(Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
                                / "landiscovery" / "history.db")
+            shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            shell.set_border_width(12)
+            self.add(shell)
+            self.stack = Gtk.Stack()
+            self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+            switcher = Gtk.StackSwitcher(stack=self.stack)
+            shell.pack_start(switcher, False, False, 0)
+            shell.pack_start(self.stack, True, True, 0)
             root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-            root.set_border_width(12)
-            self.add(root)
+            self.stack.add_titled(root, "scan", _("Scan"))
             controls = Gtk.Box(spacing=8)
             root.pack_start(controls, False, False, 0)
             label = Gtk.Label(label=_("Network targets"))
@@ -132,8 +142,11 @@ def main() -> int:
             scroll.add(tree)
             root.pack_start(scroll, True, True, 0)
             self.tree = tree
+            self._make_other_pages()
             self.set_default(self.start_button)
             self.show_all()
+            self.reduced_notice.hide()
+            self._refresh_history()
 
         def _host_menu(self, tree, event):
             if event.button != 3:
@@ -165,6 +178,168 @@ def main() -> int:
             menu.show_all()
             menu.popup_at_pointer(event)
             return True
+
+        def _make_other_pages(self):
+            history = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            self.stack.add_titled(history, "history", _("History"))
+            self.history_store = Gtk.ListStore(int, str, str, int, str)
+            table = Gtk.TreeView(model=self.history_store)
+            for index, title in enumerate(("ID", _("Profile"), _("Network targets"),
+                                           "Hosts", "Status")):
+                table.append_column(Gtk.TreeViewColumn(title, Gtk.CellRendererText(),
+                                                      text=index))
+            table.connect("row-activated", self._load_history_scan)
+            self.history_table = table
+            scroll = Gtk.ScrolledWindow()
+            scroll.add(table)
+            history.pack_start(scroll, True, True, 0)
+            buttons = Gtk.Box(spacing=8)
+            history.pack_start(buttons, False, False, 0)
+            for label, callback in (("Refresh", self._refresh_history),
+                                    ("Export", self._export_selected),
+                                    ("Delete", self._delete_selected)):
+                button = Gtk.Button(label=_(label))
+                button.connect("clicked", callback)
+                buttons.pack_start(button, False, False, 0)
+
+            compare = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            self.stack.add_titled(compare, "compare", _("Compare"))
+            choices = Gtk.Box(spacing=8)
+            compare.pack_start(choices, False, False, 0)
+            self.old_scan = Gtk.ComboBoxText()
+            self.new_scan = Gtk.ComboBoxText()
+            choices.pack_start(self.old_scan, False, False, 0)
+            choices.pack_start(self.new_scan, False, False, 0)
+            go = Gtk.Button(label=_("Compare"))
+            go.connect("clicked", self._compare_selected)
+            choices.pack_start(go, False, False, 0)
+            self.compare_warning = Gtk.Label(xalign=0)
+            compare.pack_start(self.compare_warning, False, False, 0)
+            self.diff_store = Gtk.ListStore(str, str, str, str)
+            diff_tree = Gtk.TreeView(model=self.diff_store)
+            for index, title in enumerate(("State", "IP", _("Hostname"), "Detail")):
+                diff_tree.append_column(Gtk.TreeViewColumn(title, Gtk.CellRendererText(),
+                                                           text=index))
+            scroll = Gtk.ScrolledWindow()
+            scroll.add(diff_tree)
+            compare.pack_start(scroll, True, True, 0)
+
+            inventory = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            self.stack.add_titled(inventory, "inventory", _("Inventory"))
+            fields = Gtk.Box(spacing=8)
+            inventory.pack_start(fields, False, False, 0)
+            self.device_entries = {}
+            for name in ("Key", "Name", "Notes", "Tags"):
+                entry = Gtk.Entry()
+                entry.set_placeholder_text(_(name))
+                fields.pack_start(entry, True, True, 0)
+                self.device_entries[name] = entry
+            save = Gtk.Button(label=_("Save"))
+            save.connect("clicked", self._save_device)
+            fields.pack_start(save, False, False, 0)
+            self.device_store = Gtk.ListStore(str, str, str, str)
+            device_tree = Gtk.TreeView(model=self.device_store)
+            for index, name in enumerate(("Key", _("Name"), _("Notes"), _("Tags"))):
+                device_tree.append_column(Gtk.TreeViewColumn(name, Gtk.CellRendererText(),
+                                                             text=index))
+            device_tree.connect("row-activated", self._edit_device)
+            scroll = Gtk.ScrolledWindow()
+            scroll.add(device_tree)
+            inventory.pack_start(scroll, True, True, 0)
+
+            security = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            self.stack.add_titled(security, "security", _("Security"))
+            self.finding_store = Gtk.ListStore(str, str, str, str)
+            findings = Gtk.TreeView(model=self.finding_store)
+            for index, name in enumerate(("Severity", "IP", "Title", "Detail")):
+                findings.append_column(Gtk.TreeViewColumn(name, Gtk.CellRendererText(),
+                                                          text=index))
+            scroll = Gtk.ScrolledWindow()
+            scroll.add(findings)
+            security.pack_start(scroll, True, True, 0)
+
+        def _selected_scan_id(self):
+            model, tree_iter = self.history_table.get_selection().get_selected()
+            return model[tree_iter][0] if tree_iter is not None else None
+
+        def _refresh_history(self, *_):
+            summaries = self.store.list_scans()
+            self.history_store.clear()
+            self.old_scan.remove_all()
+            self.new_scan.remove_all()
+            for item in summaries:
+                self.history_store.append((item.id, item.profile, ", ".join(item.targets),
+                                           item.host_count, item.status))
+                label = f"{item.id} · {item.profile} · {item.host_count} hosts"
+                self.old_scan.append(str(item.id), label)
+                self.new_scan.append(str(item.id), label)
+            if summaries:
+                self.new_scan.set_active(0)
+                self.old_scan.set_active(min(1, len(summaries) - 1))
+            self.device_store.clear()
+            for device in self.store.list_devices():
+                self.device_store.append((device.key, device.name, device.note,
+                                          ", ".join(device.tags)))
+
+        def _load_history_scan(self, tree, path, *_):
+            scan_id = tree.get_model()[path][0]
+            self._show_result(self.store.get_scan(scan_id))
+            self.stack.set_visible_child_name("scan")
+
+        def _delete_selected(self, *_):
+            scan_id = self._selected_scan_id()
+            if scan_id is not None and self._confirm(f"Delete scan {scan_id}?"):
+                self.store.delete_scan(scan_id)
+                self._refresh_history()
+
+        def _export_selected(self, *_):
+            scan_id = self._selected_scan_id()
+            if scan_id is None:
+                return
+            dialog = Gtk.FileChooserDialog(title=_("Export"), transient_for=self,
+                                           action=Gtk.FileChooserAction.SAVE)
+            dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+            dialog.add_button(_("Save"), Gtk.ResponseType.OK)
+            dialog.set_current_name(f"landiscovery-{scan_id}.html")
+            if dialog.run() == Gtk.ResponseType.OK:
+                try:
+                    path = Path(dialog.get_filename())
+                    exporters = {".csv": export_csv, ".json": export_json,
+                                 ".html": export_html}
+                    exporters[path.suffix.lower()](self.store.get_scan(scan_id), path)
+                except (KeyError, OSError, ValueError) as exc:
+                    self._message(str(exc))
+            dialog.destroy()
+
+        def _compare_selected(self, *_):
+            old, new = self.old_scan.get_active_id(), self.new_scan.get_active_id()
+            if old is None or new is None:
+                return
+            rows = DiffRows(compare_scans(self.store.get_scan(int(old)),
+                                          self.store.get_scan(int(new))))
+            self.compare_warning.set_text(
+                (_("Comparison is unreliable") + ": " + "; ".join(rows.reasons))
+                if not rows.comparable else "")
+            self.diff_store.clear()
+            for row in rows.rows:
+                self.diff_store.append((_(row.state.title()), row.ip, row.hostname,
+                                        row.detail))
+
+        def _save_device(self, *_):
+            values = {name: entry.get_text().strip()
+                      for name, entry in self.device_entries.items()}
+            if not values["Key"]:
+                self._message("Device key is required")
+                return
+            self.store.set_device(values["Key"], values["Name"], values["Notes"],
+                                  [tag.strip() for tag in values["Tags"].split(",")
+                                   if tag.strip()])
+            self._refresh_history()
+
+        def _edit_device(self, tree, path, *_):
+            row = tree.get_model()[path]
+            for entry, value in zip(self.device_entries.values(), row):
+                entry.set_text(value)
 
         def _run_host_action(self, _item, kind, host):
             try:
@@ -230,10 +405,13 @@ def main() -> int:
                     result = self.engine.scan(networks, profile,
                                               ScanOptions(snmp_community=community),
                                               on_progress=progress)
+                    previous = self.store.list_scans()
+                    diff = (compare_scans(self.store.get_scan(previous[0].id), result)
+                            if previous else None)
                     self.store.save_scan(result)
-                    GLib.idle_add(self._finished, result, None)
+                    GLib.idle_add(self._finished, result, None, diff)
                 except Exception as exc:
-                    GLib.idle_add(self._finished, None, str(exc))
+                    GLib.idle_add(self._finished, None, str(exc), None)
 
             threading.Thread(target=work, daemon=True).start()
 
@@ -247,13 +425,21 @@ def main() -> int:
             if self.engine:
                 threading.Thread(target=self.engine.cancel, daemon=True).start()
 
-        def _finished(self, result, error):
+        def _finished(self, result, error, diff):
             self.start_button.set_sensitive(True)
             self.cancel_button.set_sensitive(False)
             self.progress.set_fraction(0)
             if error:
                 self.status.set_text(_("Scan failed") + ": " + error)
                 return False
+            self._show_result(result)
+            if diff and diff.comparable and diff.new_hosts:
+                self.status.set_text(self.status.get_text() +
+                                     f" · {len(diff.new_hosts)} " + _("New"))
+            self._refresh_history()
+            return False
+
+        def _show_result(self, result):
             self.model.load(result)
             self.table_store.clear()
             if result.reduced:
@@ -265,13 +451,16 @@ def main() -> int:
                                          "" if host.latency_ms is None else str(host.latency_ms),
                                          ", ".join(str(p.number) for p in host.ports),
                                          ", ".join(host.services), host.os))
+            self.finding_store.clear()
+            for finding in sorted_findings(result):
+                self.finding_store.append((finding.severity, finding.host,
+                                           finding.title, finding.detail))
             self.status.set_text((_("Scan cancelled") if result.status == "cancelled"
                                   else _("Scan failed") if result.status == "failed"
                                   else _("No hosts found") if not result.hosts
                                   else _("Scan complete")) +
                                  f" · {len(result.hosts)} hosts" +
                                  (" · " + "; ".join(result.warnings) if result.warnings else ""))
-            return False
 
     class Application(Gtk.Application):
         def __init__(self):

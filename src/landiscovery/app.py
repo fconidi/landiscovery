@@ -113,6 +113,9 @@ def main() -> int:
             self.cancel_button.set_sensitive(False)
             self.cancel_button.connect("clicked", self.cancel_scan)
             controls.pack_start(self.cancel_button, False, False, 0)
+            columns_button = Gtk.Button(label=_("Columns"))
+            columns_button.connect("clicked", self._columns_menu)
+            controls.pack_start(columns_button, False, False, 0)
             self.status = Gtk.Label(label=_("No hosts found"), xalign=0)
             root.pack_start(self.status, False, False, 0)
             self.reduced_notice = Gtk.Label(
@@ -131,12 +134,15 @@ def main() -> int:
             tree = Gtk.TreeView(model=self.table_store)
             tree.set_headers_clickable(True)
             tree.connect("button-press-event", self._host_menu)
+            self.columns = {}
             for index, name in enumerate(COLUMNS):
                 renderer = Gtk.CellRendererText()
                 column = Gtk.TreeViewColumn(_(name), renderer, text=index)
                 column.set_resizable(True)
                 column.set_sort_column_id(index)
+                column.set_visible(name in self.model.visible_columns)
                 tree.append_column(column)
+                self.columns[name] = column
             scroll = Gtk.ScrolledWindow()
             scroll.set_hexpand(True)
             scroll.set_vexpand(True)
@@ -148,6 +154,25 @@ def main() -> int:
             self.show_all()
             self.reduced_notice.hide()
             self._refresh_history()
+
+        def _columns_menu(self, button):
+            menu = Gtk.Menu()
+            for name, column in self.columns.items():
+                item = Gtk.CheckMenuItem(label=_(name))
+                item.set_active(column.get_visible())
+                item.connect("toggled", self._toggle_column, name)
+                menu.append(item)
+            menu.show_all()
+            menu.popup_at_widget(button, Gdk.Gravity.SOUTH_WEST,
+                                 Gdk.Gravity.NORTH_WEST, None)
+
+        def _toggle_column(self, item, name):
+            if not item.get_active() and sum(c.get_visible() for c in self.columns.values()) <= 1:
+                item.set_active(True)
+                return
+            self.columns[name].set_visible(item.get_active())
+            self.model.set_visible_columns(
+                [key for key, column in self.columns.items() if column.get_visible()])
 
         def _host_menu(self, tree, event):
             if event.button != 3:

@@ -1,2 +1,81 @@
-/* Native GTK widgets retain the current desktop theme. */
-treeview.view { padding: 3px; }
+/* LAN Discovery's restrained desktop palette. GTK keeps native input behavior. */
+window, .app-shell { background: #f3f6fb; color: #203653; }
+
+.app-header { background: #142e57; padding: 16px 22px; }
+.app-title { color: #f8fbff; font-size: 20px; font-weight: 700; }
+.app-subtitle { color: #c6d9f5; font-size: 12px; }
+
+.app-navigation {
+  background: #eaf0fa;
+  border-bottom: 1px solid #d0dcef;
+  padding: 0 18px;
+}
+.app-navigation button {
+  background: transparent;
+  box-shadow: none;
+  border: 0;
+  border-radius: 0;
+  color: #3a5578;
+  padding: 11px 15px 9px;
+}
+.app-navigation button:hover { background: #dce8f9; color: #1b477c; }
+.app-navigation button:checked {
+  background: #dce8f9;
+  color: #1b5598;
+  font-weight: 600;
+}
+
+.page-content { padding: 18px 20px 20px; }
+.scan-controls {
+  background: #ffffff;
+  border: 1px solid #d7e2f0;
+  border-radius: 10px;
+  padding: 12px;
+}
+.scan-controls label { color: #2a4569; font-weight: 600; }
+entry, combobox button {
+  background: #ffffff;
+  color: #1d375b;
+  border: 1px solid #b6c9e2;
+  border-radius: 6px;
+  min-height: 30px;
+}
+entry:focus, combobox button:focus {
+  border-color: #256fca;
+  box-shadow: 0 0 0 2px alpha(#256fca, 0.20);
+}
+button { min-height: 30px; border-radius: 6px; }
+button.suggested-action {
+  background: #2467b5;
+  border-color: #2467b5;
+  color: #ffffff;
+  font-weight: 600;
+}
+button.suggested-action:hover { background: #1c5599; }
+button.suggested-action:disabled { background: #c6d3e5; color: #415a78; }
+button.suggested-action label { color: #ffffff; }
+button.suggested-action:disabled label { color: #415a78; }
+.scan-status { color: #3a567b; font-weight: 600; }
+.reduced-notice { color: #8a5815; }
+progressbar trough { background: #dce6f4; border-radius: 4px; min-height: 5px; }
+progressbar progress { background: #256fca; border-radius: 4px; }
+
+.results-surface {
+  background: #ffffff;
+  border: 1px solid #d7e2f0;
+  border-radius: 10px;
+}
+.empty-state { padding: 24px; }
+.empty-title { color: #173b6b; font-size: 18px; font-weight: 700; }
+.empty-detail { color: #526987; }
+treeview.view { background: #ffffff; color: #203653; }
+treeview.view:selected { background: #dceafa; color: #173f72; }
+treeview.view header button {
+  background: #edf2f9;
+  color: #385779;
+  border-bottom: 1px solid #d7e2f0;
+  border-radius: 0;
+  box-shadow: none;
+  font-weight: 600;
+}
+treeview.view header button:hover { background: #e2eaf7; }

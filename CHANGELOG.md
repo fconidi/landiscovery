@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+- Refine the GTK interface with clearer navigation, scan controls and empty states.
+- Replace the application icon with a simpler network path mark.
+
 ## 1.0.0
 
 - Add GTK and command-line network scanning with configurable profiles.

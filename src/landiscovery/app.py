@@ -69,43 +69,63 @@ def main() -> int:
     import gi
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
-    from gi.repository import Gdk, GLib, Gtk
+    from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
     set_language("auto")
 
     class MainWindow(Gtk.ApplicationWindow):
         def __init__(self, app):
-            super().__init__(application=app, title="landiscovery")
-            self.set_default_size(1000, 620)
+            super().__init__(application=app, title="LAN Discovery")
+            self.set_default_size(1000, 680)
             self.engine = None
             self.model = ResultsModel()
             self.profiles = ProfileStore(default_profiles_path()).load()
             self.store = Store(Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
                                / "landiscovery" / "history.db")
-            shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-            shell.set_border_width(12)
+            shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            shell.get_style_context().add_class("app-shell")
             self.add(shell)
+            header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+            header.get_style_context().add_class("app-header")
+            icon = Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                str(Path(__file__).parent / "icon.svg"), 42, 42, True))
+            header.pack_start(icon, False, False, 0)
+            heading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            title = Gtk.Label(label="LAN Discovery", xalign=0)
+            title.get_style_context().add_class("app-title")
+            heading.pack_start(title, False, False, 0)
+            subtitle = Gtk.Label(label=_("Explore your local network"), xalign=0)
+            subtitle.get_style_context().add_class("app-subtitle")
+            heading.pack_start(subtitle, False, False, 0)
+            header.pack_start(heading, True, True, 0)
+            shell.pack_start(header, False, False, 0)
             self.stack = Gtk.Stack()
             self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
             switcher = Gtk.StackSwitcher(stack=self.stack)
+            switcher.get_style_context().add_class("app-navigation")
             shell.pack_start(switcher, False, False, 0)
             shell.pack_start(self.stack, True, True, 0)
-            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            root.get_style_context().add_class("page-content")
             self.stack.add_titled(root, "scan", _("Scan"))
-            controls = Gtk.Box(spacing=8)
+            controls = Gtk.Box(spacing=10)
+            controls.get_style_context().add_class("scan-controls")
             root.pack_start(controls, False, False, 0)
             label = Gtk.Label(label=_("Network targets"))
             controls.pack_start(label, False, False, 0)
             self.targets = Gtk.Entry()
             self.targets.set_placeholder_text("192.168.1.0/24")
+            self.targets.set_tooltip_text(_("Enter an IP address or network range"))
             self.targets.set_activates_default(True)
             controls.pack_start(self.targets, True, True, 0)
             self.profile = Gtk.ComboBoxText()
             for name in self.profiles:
                 self.profile.append_text(name)
             self.profile.set_active(0)
+            self.profile.set_tooltip_text(_("Scan profile"))
             controls.pack_start(self.profile, False, False, 0)
             self.start_button = Gtk.Button(label=_("Start"))
+            self.start_button.get_style_context().add_class("suggested-action")
             self.start_button.set_can_default(True)
             self.start_button.connect("clicked", self.start_scan)
             controls.pack_start(self.start_button, False, False, 0)
@@ -114,12 +134,16 @@ def main() -> int:
             self.cancel_button.connect("clicked", self.cancel_scan)
             controls.pack_start(self.cancel_button, False, False, 0)
             columns_button = Gtk.Button(label=_("Columns"))
+            columns_button.get_style_context().add_class("flat")
             columns_button.connect("clicked", self._columns_menu)
             controls.pack_start(columns_button, False, False, 0)
-            self.status = Gtk.Label(label=_("No hosts found"), xalign=0)
+            self.status = Gtk.Label(label=_("Enter a network target and start a scan"),
+                                    xalign=0)
+            self.status.get_style_context().add_class("scan-status")
             root.pack_start(self.status, False, False, 0)
             self.reduced_notice = Gtk.Label(
                 label=_("Reduced mode: some information is unavailable"), xalign=0)
+            self.reduced_notice.get_style_context().add_class("reduced-notice")
             self.reduced_notice.set_no_show_all(True)
             root.pack_start(self.reduced_notice, False, False, 0)
             self.progress = Gtk.ProgressBar()
@@ -147,11 +171,31 @@ def main() -> int:
             scroll.set_hexpand(True)
             scroll.set_vexpand(True)
             scroll.add(tree)
-            root.pack_start(scroll, True, True, 0)
+            self.results_stack = Gtk.Stack()
+            self.results_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+            self.results_stack.add_named(scroll, "results")
+            empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            empty.set_halign(Gtk.Align.CENTER)
+            empty.set_valign(Gtk.Align.CENTER)
+            empty.get_style_context().add_class("empty-state")
+            empty_icon = Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                str(Path(__file__).parent / "icon.svg"), 64, 64, True))
+            empty.pack_start(empty_icon, False, False, 0)
+            self.empty_title = Gtk.Label(label=_("Ready to discover"))
+            self.empty_title.get_style_context().add_class("empty-title")
+            empty.pack_start(self.empty_title, False, False, 0)
+            self.empty_detail = Gtk.Label(label=_("Results will appear here after a scan"))
+            self.empty_detail.get_style_context().add_class("empty-detail")
+            empty.pack_start(self.empty_detail, False, False, 0)
+            self.results_stack.add_named(empty, "empty")
+            self.results_stack.set_visible_child_name("empty")
+            self.results_stack.get_style_context().add_class("results-surface")
+            root.pack_start(self.results_stack, True, True, 0)
             self.tree = tree
             self._make_other_pages()
             self.set_default(self.start_button)
             self.show_all()
+            self.results_stack.set_visible_child_name("empty")
             self.reduced_notice.hide()
             self._refresh_history()
 
@@ -206,7 +250,8 @@ def main() -> int:
             return True
 
         def _make_other_pages(self):
-            history = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            history = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            history.get_style_context().add_class("page-content")
             self.stack.add_titled(history, "history", _("History"))
             self.history_store = Gtk.ListStore(int, str, str, int, str)
             table = Gtk.TreeView(model=self.history_store)
@@ -228,7 +273,8 @@ def main() -> int:
                 button.connect("clicked", callback)
                 buttons.pack_start(button, False, False, 0)
 
-            compare = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            compare = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            compare.get_style_context().add_class("page-content")
             self.stack.add_titled(compare, "compare", _("Compare"))
             choices = Gtk.Box(spacing=8)
             compare.pack_start(choices, False, False, 0)
@@ -250,7 +296,8 @@ def main() -> int:
             scroll.add(diff_tree)
             compare.pack_start(scroll, True, True, 0)
 
-            inventory = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            inventory = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            inventory.get_style_context().add_class("page-content")
             self.stack.add_titled(inventory, "inventory", _("Inventory"))
             fields = Gtk.Box(spacing=8)
             inventory.pack_start(fields, False, False, 0)
@@ -273,7 +320,8 @@ def main() -> int:
             scroll.add(device_tree)
             inventory.pack_start(scroll, True, True, 0)
 
-            security = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            security = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            security.get_style_context().add_class("page-content")
             self.stack.add_titled(security, "security", _("Security"))
             self.finding_store = Gtk.ListStore(str, str, str, str)
             findings = Gtk.TreeView(model=self.finding_store)
@@ -285,6 +333,7 @@ def main() -> int:
             security.pack_start(scroll, True, True, 0)
 
             map_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            map_page.get_style_context().add_class("page-content")
             self.stack.add_titled(map_page, "map", _("Map"))
             self.map_view = MapView(on_select=self._select_map_host)
             map_page.pack_start(self.map_view, True, True, 0)
@@ -484,6 +533,12 @@ def main() -> int:
         def _show_result(self, result):
             self.model.load(result)
             self.table_store.clear()
+            if result.hosts:
+                self.results_stack.set_visible_child_name("results")
+            else:
+                self.empty_title.set_text(_("No hosts found"))
+                self.empty_detail.set_text(_("Try another target or scan profile"))
+                self.results_stack.set_visible_child_name("empty")
             if result.reduced:
                 self.reduced_notice.show()
             else:

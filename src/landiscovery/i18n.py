@@ -51,6 +51,13 @@ CATALOG = {
     "Copy IP": "Copia IP",
     "Map": "Mappa",
     "Columns": "Colonne",
+    "Explore your local network": "Esplora la rete locale",
+    "Enter an IP address or network range": "Inserisci un indirizzo IP o un intervallo di rete",
+    "Scan profile": "Profilo di scansione",
+    "Ready to discover": "Pronto per la scansione",
+    "Enter a network target and start a scan": "Inserisci una rete e avvia la scansione",
+    "Results will appear here after a scan": "I risultati appariranno qui dopo una scansione",
+    "Try another target or scan profile": "Prova un'altra rete o un altro profilo",
 }
 
 _language = "en"

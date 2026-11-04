@@ -2,6 +2,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -622,11 +623,18 @@ def test_helper_script():
     assert os.stat(script).st_mode & 0o777 == 0o755
     text = script.read_text()
     assert text.startswith("#!/usr/bin/python3 -I\n")
-    assert "/usr/share/landiscovery" in text
-    assert ".." not in text and "__file__" not in text and "src" not in text
+    # unico percorso: quello di installazione, nessun ripiego relativo al file
+    assert re.findall(r"sys\.path\.\w+\(.*\)", text) == [
+        'sys.path.insert(0, "/usr/share/landiscovery")']
+    assert "__file__" not in text and "os.path" not in text
+    # il modulo dei sorgenti è già importato: il test non dipende da una
+    # eventuale copia installata
     code = ("import runpy, sys\n"
             f"sys.path.insert(0, {str(SRC)!r})\n"
+            "import landiscovery.helper\n"
+            f"assert landiscovery.helper.__file__.startswith({str(SRC)!r})\n"
             f"runpy.run_path({str(script)!r}, run_name='__main__')\n")
     out = subprocess.run([sys.executable, "-c", code], input=b"bad\n",
                          capture_output=True, timeout=10)
-    assert out.returncode == 2 and out.stderr.strip()
+    assert out.returncode == 2
+    assert out.stderr.startswith(b"landiscovery-helper: ")

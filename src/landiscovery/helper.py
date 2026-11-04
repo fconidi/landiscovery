@@ -305,7 +305,7 @@ class _Runner:
 
     def _reap(self) -> int:
         main_thread = threading.current_thread() is threading.main_thread()
-        blocked = {signal.SIGTERM, signal.SIGINT}
+        blocked = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
         if main_thread:
             old = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
         try:

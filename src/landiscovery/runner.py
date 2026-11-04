@@ -49,6 +49,14 @@ def _failure(rc: int, stderr: bytes, what: str) -> HelperError:
     return err
 
 
+class _CallbackError(Exception):
+    """Errore sollevato da ``on_line``: va riconsegnato al chiamante intatto."""
+
+    def __init__(self, original: BaseException):
+        super().__init__(original)
+        self.original = original
+
+
 class _Lines:
     """Raccoglie stdout e passa al chiamante ogni riga completa."""
 
@@ -57,6 +65,13 @@ class _Lines:
         self.data = bytearray()
         self.partial = b""
 
+    def _emit(self, raw: bytes) -> None:
+        try:
+            self.on_line(raw.decode("utf-8", errors="replace"))
+        except Exception as exc:
+            # Incapsulato perché non venga scambiato per un errore di scrittura.
+            raise _CallbackError(exc) from None
+
     def write(self, chunk: bytes) -> None:
         self.data += chunk
         if self.on_line is None:
@@ -64,25 +79,66 @@ class _Lines:
         self.partial += chunk
         *lines, self.partial = self.partial.split(b"\n")
         for line in lines:
-            self.on_line(line.decode("utf-8", errors="replace"))
+            self._emit(line)
 
     def flush(self) -> None:
         pass
 
     def finish(self) -> str:
         if self.on_line is not None and self.partial:
-            self.on_line(self.partial.decode("utf-8", errors="replace"))
-            self.partial = b""
+            partial, self.partial = self.partial, b""
+            self._emit(partial)
         return self.data.decode("utf-8", errors="replace")
 
 
-class HelperRunner:
-    """Esegue un'operazione dell'helper e ne permette l'annullamento.
+def _encode(op: str, params: dict) -> bytes:
+    try:
+        request = (json.dumps({"op": op, "params": params}) + "\n").encode()
+    except (TypeError, ValueError) as exc:
+        raise HelperError("request cannot be encoded") from exc
+    if len(request) > helper.MAX_INPUT:
+        raise HelperError("request too large")
+    return request
 
-    ``cancel()`` si può chiamare da qualunque thread e in qualunque momento:
-    prima di ``run`` fa sollevare subito ``ScanCancelled`` alla prossima
-    esecuzione senza avviare nulla; durante ``run`` ferma l'intera catena di
-    processi; a esecuzione conclusa non ha effetto.
+
+def _signal(proc: subprocess.Popen, sig: int) -> None:
+    try:
+        proc.send_signal(sig)
+    except OSError:
+        pass  # processo di un altro utente o già terminato
+
+
+def _terminate(proc: subprocess.Popen) -> bool:
+    """Attende l'uscita, poi SIGTERM e SIGKILL; True se il processo è raccolto."""
+    for sig, timeout in ((None, CANCEL_WAIT), (signal.SIGTERM, KILL_WAIT),
+                         (signal.SIGKILL, CANCEL_WAIT)):
+        if sig is not None:
+            _signal(proc, sig)
+        try:
+            proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            continue
+    return False
+
+
+class HelperRunner:
+    """Esegue le operazioni dell'helper e ne permette l'annullamento.
+
+    Lo stesso oggetto serve per più passi di una scansione, uno alla volta:
+    un secondo ``run`` concorrente solleva ``RuntimeError``.
+
+    ``cancel()`` si può chiamare da qualunque thread e in qualunque momento e
+    resta valido: l'esecuzione in corso viene fermata lungo tutta la catena di
+    processi e ogni ``run`` successivo solleva subito ``ScanCancelled``, senza
+    avviare nulla, finché non si chiama ``reset()``. ``cancel()`` può
+    attendere fino a circa 12 s che i processi terminino: va chiamato da un
+    thread di lavoro, non dal ciclo principale dell'interfaccia.
+
+    ``on_line`` viene eseguito nel thread che chiama ``run``: un'interfaccia
+    grafica deve passare le righe al proprio ciclo principale (per esempio
+    con ``GLib.idle_add``). Un'eccezione sollevata da ``on_line`` ferma
+    l'esecuzione e arriva invariata al chiamante.
     """
 
     def __init__(self, command: list[str] | None = None, *, direct: bool = False,
@@ -92,8 +148,8 @@ class HelperRunner:
         self.which = helper.BIN if which is None else which
         self._lock = threading.Lock()
         self._state = _IDLE
-        self._pending = False
         self._cancelled = False
+        self._writing = False
         self._proc: subprocess.Popen | None = None
         self._direct: helper._Runner | None = None
         self._done = threading.Event()
@@ -102,11 +158,11 @@ class HelperRunner:
 
     def _start(self) -> None:
         """Passa allo stato di esecuzione; va chiamato con il lock acquisito."""
-        if self._pending:
-            self._pending = False
+        if self._state == _RUNNING:
+            raise RuntimeError("a run is already in progress")
+        if self._cancelled:
             raise ScanCancelled()
         self._state = _RUNNING
-        self._cancelled = False
         self._done.clear()
 
     def _finish(self) -> None:
@@ -116,53 +172,83 @@ class HelperRunner:
             self._direct = None
         self._done.set()
 
+    def reset(self) -> None:
+        """Annulla l'effetto di ``cancel()`` per le esecuzioni successive."""
+        with self._lock:
+            if self._state == _RUNNING:
+                raise RuntimeError("cannot reset while a run is in progress")
+            self._cancelled = False
+
     # --- esecuzione ------------------------------------------------------------
 
     def run(self, op: str, params: dict, on_line=None) -> str:
         """Esegue ``op`` e restituisce lo stdout prodotto (XML o testo)."""
-        if self.direct:
-            return self._run_direct(op, params, on_line)
-        return self._run_helper(op, params, on_line)
+        try:
+            if self.direct:
+                return self._run_direct(op, params, on_line)
+            return self._run_helper(op, params, on_line)
+        except _CallbackError as wrapped:
+            raise wrapped.original from None
 
     def _run_helper(self, op: str, params: dict, on_line) -> str:
-        try:
-            request = (json.dumps({"op": op, "params": params}) + "\n").encode()
-        except (TypeError, ValueError) as exc:
-            raise HelperError("request cannot be encoded") from exc
+        request = _encode(op, params)
         with self._lock:
             self._start()
             try:
                 proc = subprocess.Popen(
                     self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, close_fds=True, start_new_session=True)
+                    stderr=subprocess.PIPE, bufsize=0, close_fds=True,
+                    start_new_session=True)
             except OSError as exc:
                 self._state = _FINISHED
                 self._done.set()
                 raise HelperError(
                     f"cannot run {self.command[0]}: {exc.strerror or exc}") from exc
             self._proc = proc
-            try:
-                proc.stdin.write(request)
-                proc.stdin.flush()
-            except OSError:
-                pass  # l'helper è già uscito: lo dirà il codice di uscita
+            self._writing = True
+        # Scrittura fuori dal lock: se l'altro capo non legge (per esempio
+        # pkexec in attesa dell'autenticazione) cancel() non resta bloccato.
+        try:
+            self._send(proc, request)
+        finally:
+            with self._lock:
+                self._writing = False
+                if self._cancelled:
+                    self._close_stdin(proc)
         sink = _Lines(on_line)
+        rc = None
         try:
             stderr = self._collect(proc, sink)
             text = sink.finish()
         finally:
-            # EOF su stdin: se l'helper è ancora vivo si ferma da solo.
+            # EOF su stdin e pipe di uscita chiuse: un helper ancora vivo, anche
+            # se fermo in scrittura, riceve EPIPE e prende la via di arresto.
             with self._lock:
                 self._close_stdin(proc)
-            rc = proc.wait()
             for stream in (proc.stdout, proc.stderr):
                 stream.close()
+            if _terminate(proc):
+                rc = proc.returncode
+            else:
+                threading.Thread(target=proc.wait, daemon=True).start()
             self._finish()
         if self._cancelled:
             raise ScanCancelled()
+        if rc is None:
+            raise HelperError("helper did not exit")
         if rc != 0:
             raise _failure(rc, stderr, "helper")
         return text
+
+    @staticmethod
+    def _send(proc: subprocess.Popen, data: bytes) -> None:
+        view = memoryview(data)
+        try:
+            while view:
+                written = proc.stdin.write(view)
+                view = view[written:]
+        except (OSError, ValueError):
+            pass  # l'helper è già uscito: lo dirà il codice di uscita
 
     @staticmethod
     def _collect(proc: subprocess.Popen, sink: _Lines) -> bytes:
@@ -193,7 +279,20 @@ class HelperRunner:
             except OSError:
                 pass
 
+    @classmethod
+    def _send_cancel(cls, proc: subprocess.Popen) -> None:
+        """Scrive ``cancel`` senza mai bloccarsi, poi chiude stdin (EOF)."""
+        if proc.stdin is None or proc.stdin.closed:
+            return
+        try:
+            os.set_blocking(proc.stdin.fileno(), False)
+            proc.stdin.write(b"cancel\n")
+        except (OSError, ValueError):
+            pass  # pipe piena o chiusa: basta l'EOF
+        cls._close_stdin(proc)
+
     def _run_direct(self, op: str, params: dict, on_line) -> str:
+        _encode(op, params)
         cmd = helper.build_command(op, params)
         argv = [self.which[cmd[0]], *cmd[1:]]
         with self._lock:
@@ -222,39 +321,20 @@ class HelperRunner:
     # --- annullamento ------------------------------------------------------------
 
     def cancel(self) -> None:
-        """Annulla l'esecuzione in corso (o la prossima, se non è ancora iniziata)."""
+        """Annulla l'esecuzione in corso e tutte le successive fino a ``reset()``."""
         with self._lock:
-            if self._state == _IDLE:
-                self._pending = True
-                return
-            if self._state == _FINISHED:
-                return
             self._cancelled = True
+            if self._state != _RUNNING:
+                return
             proc, direct = self._proc, self._direct
             if direct is not None:
                 direct.request_stop()
-            elif proc is not None and proc.stdin is not None and not proc.stdin.closed:
-                try:
-                    proc.stdin.write(b"cancel\n")
-                    proc.stdin.flush()
-                except OSError:
-                    pass
-                self._close_stdin(proc)
+            elif proc is not None and not self._writing:
+                self._send_cancel(proc)
+            # Se la richiesta è ancora in scrittura, stdin viene chiuso dal
+            # thread di run() appena la scrittura termina o fallisce.
         if direct is not None:
             # Il ciclo di esecuzione passa a SIGKILL dopo il tempo di grazia.
             self._done.wait(helper.KILL_GRACE + CANCEL_WAIT)
-            return
-        if proc is None:
-            return
-        for sig, timeout in ((None, CANCEL_WAIT), (signal.SIGTERM, KILL_WAIT),
-                             (signal.SIGKILL, CANCEL_WAIT)):
-            if sig is not None:
-                try:
-                    proc.send_signal(sig)
-                except OSError:
-                    pass  # processo di un altro utente o già terminato
-            try:
-                proc.wait(timeout=timeout)
-                return
-            except subprocess.TimeoutExpired:
-                continue
+        elif proc is not None:
+            _terminate(proc)

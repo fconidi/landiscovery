@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from landiscovery import helper as helper_mod
 from landiscovery import runner as runner_mod
 from landiscovery.helper import HelperError
 from landiscovery.runner import DEFAULT_COMMAND, HelperRunner, ScanCancelled
@@ -188,13 +189,131 @@ def test_cancel_before_start_is_noop(tmp_path):
     assert not marker.exists()
 
 
-def test_cancel_after_finish_is_noop(tmp_path):
-    which = make_sh(tmp_path, 'echo "<x/>"')
+def test_cancel_is_sticky_until_reset(tmp_path):
+    which = make_sh(tmp_path, f'echo "<x/>"; echo run >> "{tmp_path}/count"')
     runner = HelperRunner(helper_command(which))
     assert runner.run(REQ_OP, REQ_PARAMS) == "<x/>\n"
+    runner.cancel()  # tra due passi della scansione
     runner.cancel()
-    runner.cancel()
+    for _ in range(2):
+        with pytest.raises(ScanCancelled):
+            runner.run(REQ_OP, REQ_PARAMS)
+    assert (tmp_path / "count").read_text().count("run") == 1
+    runner.reset()
     assert runner.run(REQ_OP, REQ_PARAMS) == "<x/>\n"
+    assert (tmp_path / "count").read_text().count("run") == 2
+
+
+def test_cancel_during_run_stays_for_next_run(tmp_path):
+    which, pidfile = make_family(tmp_path)
+    runner = HelperRunner(helper_command(which))
+    result = {}
+    t = cancel_when(pidfile, runner, result)
+    with pytest.raises(ScanCancelled):
+        runner.run(REQ_OP, REQ_PARAMS)
+    t.join(timeout=20)
+    wait_dead(result["pids"])
+    with pytest.raises(ScanCancelled):
+        runner.run(REQ_OP, REQ_PARAMS)
+
+
+def test_concurrent_run_rejected(tmp_path):
+    which, pidfile = make_family(tmp_path)
+    runner = HelperRunner(helper_command(which))
+    errors = []
+
+    def first():
+        try:
+            runner.run(REQ_OP, REQ_PARAMS)
+        except ScanCancelled:
+            errors.append("cancelled")
+
+    t = threading.Thread(target=first)
+    t.start()
+    pids = wait_file(pidfile)
+    with pytest.raises(RuntimeError):
+        runner.run(REQ_OP, REQ_PARAMS)
+    with pytest.raises(RuntimeError):
+        runner.reset()
+    runner.cancel()
+    t.join(timeout=20)
+    assert errors == ["cancelled"]
+    wait_dead(pids)
+
+
+def test_request_larger_than_limit_rejected_before_start(tmp_path):
+    marker = tmp_path / "started"
+    runner = HelperRunner([sys.executable, "-c", f"open({str(marker)!r}, 'w')"])
+    with pytest.raises(HelperError):
+        runner.run(REQ_OP, {"targets": ["x" * (helper_mod.MAX_INPUT + 1)]})
+    assert not marker.exists()
+    with pytest.raises(HelperError):
+        HelperRunner(direct=True).run(REQ_OP, {"targets": ["x" * (helper_mod.MAX_INPUT + 1)]})
+
+
+def test_cancel_does_not_block_on_pending_request_write(tmp_path, monkeypatch):
+    # Un helper che non legge stdin (come pkexec in attesa di autenticazione)
+    # con una richiesta più grande della pipe: cancel() non deve bloccarsi.
+    monkeypatch.setattr(helper_mod, "MAX_INPUT", 16 * 1024 * 1024)
+    pidfile = tmp_path / "pid"
+    code = (
+        "import os, time\n"
+        f"open({str(pidfile)!r} + '.tmp', 'w').write(str(os.getpid()))\n"
+        f"os.rename({str(pidfile)!r} + '.tmp', {str(pidfile)!r})\n"
+        "time.sleep(60)\n"
+    )
+    runner = HelperRunner([sys.executable, "-c", code])
+    result = {}
+    t = cancel_when(pidfile, runner, result)
+    t0 = time.monotonic()
+    with pytest.raises(ScanCancelled):
+        runner.run(REQ_OP, {"targets": ["1" * (4 * 1024 * 1024)]})
+    t.join(timeout=20)
+    assert not t.is_alive()
+    wait_dead(result["pids"])
+    assert result["t1"] - result["t0"] < 9
+    assert time.monotonic() - t0 < 15
+
+
+CHATTY = r"""#!{python}
+import os, sys
+with open({out!r} + ".tmp", "w") as f:
+    f.write(str(os.getpid()))
+os.rename({out!r} + ".tmp", {out!r})
+line = ("x" * 1023 + "\n").encode()
+for _ in range(2048):  # 2 MiB
+    sys.stdout.buffer.write(line)
+sys.stdout.flush()
+"""
+
+
+def test_callback_error_with_pending_output_does_not_hang(tmp_path):
+    pidfile = tmp_path / "pid"
+    script = tmp_path / "chatty"
+    script.write_text(CHATTY.format(python=sys.executable, out=str(pidfile)))
+    script.chmod(0o755)
+    which = {"nmap": str(script), "arp-scan": str(script)}
+
+    def slow_boom(_line):
+        time.sleep(0.5)
+        raise RuntimeError("callback failed")
+
+    result = {}
+
+    def worker():
+        try:
+            HelperRunner(helper_command(which)).run(REQ_OP, REQ_PARAMS, on_line=slow_boom)
+        except BaseException as exc:  # noqa: BLE001
+            result["exc"] = exc
+
+    t = threading.Thread(target=worker, daemon=True)
+    t0 = time.monotonic()
+    t.start()
+    t.join(timeout=15)
+    assert not t.is_alive(), "run() hung"
+    assert isinstance(result["exc"], RuntimeError) and str(result["exc"]) == "callback failed"
+    assert time.monotonic() - t0 < 15
+    wait_dead(wait_file(pidfile))
 
 
 def test_cancel_twice_while_running(tmp_path):
@@ -306,6 +425,29 @@ def test_direct_mode_cancel_kills_grandchild(tmp_path):
     t.join(timeout=20)
     wait_dead(result["pids"])
     assert result["t1"] - result["t0"] < 6
+
+
+def test_direct_mode_callback_oserror_propagates(tmp_path):
+    which, pidfile = make_family(tmp_path)
+
+    def boom(_line):
+        raise FileNotFoundError(2, "callback storage missing")
+
+    with pytest.raises(FileNotFoundError) as info:
+        HelperRunner(direct=True, which=which).run(REQ_OP, REQ_PARAMS, on_line=boom)
+    assert "callback storage missing" in str(info.value)
+    wait_dead(wait_file(pidfile))
+
+
+def test_helper_mode_callback_oserror_propagates(tmp_path):
+    which, pidfile = make_family(tmp_path)
+
+    def boom(_line):
+        raise PermissionError(13, "callback denied")
+
+    with pytest.raises(PermissionError):
+        HelperRunner(helper_command(which)).run(REQ_OP, REQ_PARAMS, on_line=boom)
+    wait_dead(wait_file(pidfile))
 
 
 def test_direct_mode_cancel_before_start(tmp_path):

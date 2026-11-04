@@ -1,4 +1,4 @@
-from landiscovery.mapview import TITLE, layout
+from landiscovery.mapview import TITLE, layout, layout_labels
 from landiscovery.models import Edge, Node, Topology
 
 
@@ -29,3 +29,15 @@ def test_layout_no_overlap_minimum_distance():
 
 def test_map_title_marks_topology_inferred():
     assert "Inferred" in TITLE
+
+
+def test_labels_on_each_side_do_not_overlap():
+    topology = graph(15)
+    positions = layout(topology, 975, 550)
+    labels = layout_labels(topology, positions, 975, 550)
+    boxes = []
+    for node in topology.nodes:
+        x, baseline = labels[node.id]
+        boxes.append((x, baseline - 12, x + len(node.label) * 7.5, baseline))
+    assert all(a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]
+               for i, a in enumerate(boxes) for b in boxes[i + 1:])

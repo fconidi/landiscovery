@@ -8,6 +8,33 @@ from .models import Topology
 TITLE = "Inferred topology"
 
 
+def layout_labels(topology: Topology, positions: dict[str, tuple[float, float]],
+                  width: float, height: float) -> dict[str, tuple[float, float]]:
+    """Place labels outside nodes and separate nearby labels on each side."""
+    sides = {"left": [], "right": []}
+    for node in topology.nodes:
+        if node.id not in positions:
+            continue
+        x, y = positions[node.id]
+        side = "left" if x < width / 2 else "right"
+        sides[side].append((node, x, y))
+    labels = {}
+    for side, items in sides.items():
+        items.sort(key=lambda item: (item[2], item[0].id))
+        baselines = []
+        for _, _, y in items:
+            baselines.append(max(60.0, y + 4, baselines[-1] + 18 if baselines else 60.0))
+        if baselines and baselines[-1] > height - 16:
+            shift = baselines[-1] - (height - 16)
+            baselines = [baseline - shift for baseline in baselines]
+        for (node, x, _), baseline in zip(items, baselines):
+            text_width = min(42, len(node.label)) * 7.5
+            left = x - text_width - 16 if side == "left" else x + 16
+            left = max(8.0, min(left, width - text_width - 8))
+            labels[node.id] = (left, baseline)
+    return labels
+
+
 def layout(topology: Topology, width: float, height: float) -> dict[str, tuple[float, float]]:
     ids = [node.id for node in topology.nodes]
     if not ids:
@@ -119,11 +146,16 @@ if Gtk is not None:
                 cr.set_source_rgb(*colors.get(node.kind, colors["host"]))
                 cr.arc(x, y, 11, 0, 2 * math.pi)
                 cr.fill()
-                cr.set_source_rgb(.07, .13, .17)
-                cr.select_font_face("Sans")
-                cr.set_font_size(12)
-                cr.move_to(x + 16, y + 4)
-                cr.show_text(node.label[:42])
+            screen_positions = {key: self._screen(point)
+                                for key, point in self.positions.items()}
+            label_positions = layout_labels(self.topology, screen_positions, width, height)
+            cr.set_source_rgb(.07, .13, .17)
+            cr.select_font_face("Sans")
+            cr.set_font_size(12)
+            for node in self.topology.nodes:
+                if node.id in label_positions:
+                    cr.move_to(*label_positions[node.id])
+                    cr.show_text(node.label[:42])
             cr.set_source_rgb(.07, .13, .17)
             cr.set_font_size(15)
             cr.move_to(16, 25)

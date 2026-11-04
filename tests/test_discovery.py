@@ -250,7 +250,7 @@ def test_snmp_timeout_returns_none(out):
     assert query_snmp("192.168.1.1", COMMUNITY, runner=make_runner(out)) is None
 
 
-@pytest.mark.parametrize("bad", ["", "a b", "a;b", "x" * 65, "pub\nlic", "caffè", "-v3"[:0] + "a/b"])
+@pytest.mark.parametrize("bad", ["", "a b", "a;b", "x" * 65, "pub\nlic", "caffè", "a/b"])
 def test_snmp_invalid_community_rejected(bad):
     called = []
     with pytest.raises(ValueError) as ei:
@@ -263,3 +263,123 @@ def test_snmp_invalid_community_rejected(bad):
 def test_snmp_invalid_ip_rejected(ip):
     with pytest.raises(ValueError):
         query_snmp(ip, "public", runner=make_runner())
+
+
+# --- fix round 1 ---
+
+@pytest.mark.parametrize("ip", ["fe80::1%eth0", "fe80::1%-h x", "fe80::1%1"])
+def test_snmp_rejects_scoped_ipv6(ip):
+    called = []
+    with pytest.raises(ValueError):
+        query_snmp(ip, "public", runner=lambda *a, **k: called.append(1) or "")
+    assert not called
+
+
+def test_parsers_never_return_percent():
+    for s in parse_avahi(FIXTURE.read_text()):
+        assert "%" not in s.ip
+    resp = b"HTTP/1.1 200 OK\r\nSERVER: x\r\n\r\n"
+    s = parse_ssdp_response(resp, ("fe80::1%eth0", 1900, 0, 2))
+    assert s.ip == "fe80::1"
+
+
+@pytest.mark.parametrize("msg", [
+    "No Such Object available on this agent at this OID",
+    "No Such Instance currently exists at this OID",
+    "no such name",
+])
+def test_snmp_no_such_sysname_returns_none(msg):
+    assert query_snmp("10.0.0.1", COMMUNITY, runner=make_runner(f"{msg}\ndescr")) is None
+    assert query_snmp("10.0.0.1", COMMUNITY, runner=make_runner(f"{msg}\n{msg}")) is None
+
+
+@pytest.mark.parametrize("msg", [
+    "No Such Object available on this agent at this OID",
+    "No Such Instance currently exists at this OID",
+    "No Such Name",
+])
+def test_snmp_no_such_sysdescr_gives_empty_detail(msg):
+    s = query_snmp("10.0.0.1", COMMUNITY, runner=make_runner(f"host1\n{msg}"))
+    assert s.name == "host1" and s.detail == ""
+
+
+def test_control_and_bidi_stripped():
+    bad = "a\u202eb\u2066c\u2069d\u2028e\u2029f\u200bg\u200fh\ufeffi"
+    line = f"=;eth0;IPv4;{bad};_t._tcp;local;h.local;10.0.0.1;80;\n"
+    assert parse_avahi(line)[0].name == "abcdefghi"
+    resp = f"HTTP/1.1 200 OK\r\nSERVER: {bad}\r\n\r\n".encode()
+    assert parse_ssdp_response(resp, ("10.0.0.2", 1900)).name == "abcdefghi"
+
+
+def test_avahi_escape_rules():
+    line = "=;e;IPv4;A\\999B\\065;_t._tcp;local;h.local;10.0.0.1;80;\n"
+    assert parse_avahi(line)[0].name == "A\\999BA"
+    # cifre non ASCII non sono escape
+    line = "=;e;IPv4;A\\\u0661\u0662\u0663;_t._tcp;local;h.local;10.0.0.1;80;\n"
+    assert "\\" in parse_avahi(line)[0].name
+
+
+@pytest.mark.parametrize("port", ["80x", "", "-1", "8 0", "\u0668\u0660"])
+def test_avahi_bad_port_skipped(port):
+    line = f"=;e;IPv4;N;_t._tcp;local;h.local;10.0.0.1;{port};\n"
+    assert parse_avahi(line) == []
+
+
+@pytest.mark.parametrize("status", [
+    b"HTTP/1.1 2000 OK", b"HTTP/2 200 OK", b"HTTP/1.1 404 x", b"XHTTP/1.1 200 OK",
+    b"HTTP/1.1 500 200",
+])
+def test_ssdp_status_line_strict(status):
+    data = status + b"\r\nSERVER: x\r\n\r\n"
+    assert parse_ssdp_response(data, ("10.0.0.1", 1900)) is None
+
+
+def test_ssdp_stops_at_empty_line():
+    data = b"HTTP/1.1 200 OK\r\nST: a\r\n\r\nSERVER: injected\r\n"
+    assert parse_ssdp_response(data, ("10.0.0.1", 1900)) is None
+
+
+def test_ssdp_caps_results():
+    pk = []
+    for i in range(600):
+        resp = f"HTTP/1.1 200 OK\r\nSERVER: s{i}\r\n\r\n".encode()
+        pk.append((resp, ("10.0.%d.%d" % (i // 250, i % 250 + 1), 1900)))
+    res = discover_ssdp(timeout=2.0, sock=FakeSock(pk))
+    assert len(res) == 500
+
+
+def test_ssdp_send_error_propagates_and_closes():
+    class Bad(FakeSock):
+        def sendto(self, data, addr):
+            raise OSError("rete non raggiungibile")
+
+    sock = Bad([])
+    with pytest.raises(OSError):
+        discover_ssdp(timeout=0.2, sock=sock)
+
+
+def test_ssdp_send_error_closes_internal(monkeypatch):
+    class Bad(FakeSock):
+        def sendto(self, data, addr):
+            raise OSError("x")
+
+    made = []
+    monkeypatch.setattr(discovery, "_make_ssdp_socket", lambda: made.append(Bad([])) or made[0])
+    with pytest.raises(OSError):
+        discover_ssdp(timeout=0.2)
+    assert made[0].closed
+
+
+def test_run_tool_permission_error_maps_to_toolmissing(monkeypatch):
+    def boom(*a, **k):
+        raise PermissionError("secret path /x/y")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(ToolMissing) as ei:
+        run_tool(["foo", "arg"], 1.0)
+    assert str(ei.value) == "foo"
+
+
+def test_run_tool_caps_output():
+    out = run_tool(["python3", "-c", "print('a' * (3 * 1024 * 1024))"], 10.0)
+    assert len(out) == 1024 * 1024

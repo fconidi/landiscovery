@@ -29,8 +29,15 @@ SSDP_ADDR = ("239.255.255.250", 1900)
 SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 COMMUNITY_RE = re.compile(r"[A-Za-z0-9_.@-]{1,64}")
 
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_ESCAPE_RE = re.compile(r"\\(\d{3})")
+_CONTROL_RE = re.compile(
+    "[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]"
+)
+_ESCAPE_RE = re.compile(r"\\([0-9]{3})")
+_PORT_RE = re.compile(r"[0-9]{1,5}")
+_STATUS_RE = re.compile(r"HTTP/1\.[01][ \t]+200(?:[ \t]|$)")
+
+MAX_OUTPUT = 1024 * 1024
+MAX_SSDP_RESULTS = 500
 
 OID_SYSNAME = "1.3.6.1.2.1.1.5.0"
 OID_SYSDESCR = "1.3.6.1.2.1.1.1.0"
@@ -53,14 +60,14 @@ def run_tool(argv: list[str], timeout: float, env: dict | None = None) -> str:
             argv, shell=False, capture_output=True, text=True,
             errors="replace", timeout=timeout, env=full_env, stdin=subprocess.DEVNULL,
         )
-    except FileNotFoundError as exc:
-        raise ToolMissing(argv[0]) from exc
+    except OSError as exc:
+        raise ToolMissing(argv[0]) from None
     except subprocess.TimeoutExpired as exc:
         out = exc.stdout or ""
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
-        return out
-    return proc.stdout or ""
+        return out[:MAX_OUTPUT]
+    return (proc.stdout or "")[:MAX_OUTPUT]
 
 
 def _clean(text: str, limit: int) -> str:
@@ -79,6 +86,8 @@ def _unescape_avahi(text: str) -> str:
     raw = bytearray()
     pos = 0
     for m in _ESCAPE_RE.finditer(text):
+        if int(m.group(1)) > 255:
+            continue
         raw += text[pos:m.start()].encode("utf-8")
         raw.append(int(m.group(1)) & 0xFF)
         pos = m.end()
@@ -90,11 +99,11 @@ def parse_avahi(text: str) -> list[DiscoveredService]:
     """Interpreta l'output di ``avahi-browse -a -t -r -p`` (righe ``=``)."""
     out: list[DiscoveredService] = []
     seen = set()
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if not line.startswith("="):
             continue
         f = line.split(";", 9)
-        if len(f) < 9:
+        if len(f) < 9 or not _PORT_RE.fullmatch(f[8]):
             continue
         _, _iface, _proto, name, stype, _domain, host, addr, port = f[:9]
         ip = _normalize_ip(addr)
@@ -126,10 +135,12 @@ def parse_ssdp_response(data: bytes, addr) -> DiscoveredService | None:
     if ip is None:
         return None
     lines = text.split("\n")
-    if not lines or not lines[0].strip().upper().startswith("HTTP/1.") or " 200" not in lines[0]:
+    if not _STATUS_RE.match(lines[0].strip()):
         return None
     headers: dict[str, str] = {}
     for line in lines[1:]:
+        if not line.strip():
+            break
         if ":" not in line:
             continue
         k, v = line.split(":", 1)
@@ -170,7 +181,7 @@ def discover_ssdp(timeout: float = 3.0, sock=None) -> list[DiscoveredService]:
             sock.settimeout(remaining)
             try:
                 data, addr = sock.recvfrom(65535)
-            except (socket.timeout, OSError):
+            except OSError:  # scadenza o errore di ricezione
                 break
             svc = parse_ssdp_response(data, addr)
             if svc is None:
@@ -179,8 +190,8 @@ def discover_ssdp(timeout: float = 3.0, sock=None) -> list[DiscoveredService]:
             if key not in seen:
                 seen.add(key)
                 found.append(svc)
-    except OSError:
-        pass
+                if len(found) >= MAX_SSDP_RESULTS:
+                    break
     finally:
         if own:
             sock.close()
@@ -193,12 +204,16 @@ def query_snmp(ip: str, community: str, runner: Runner | None = None) -> Discove
         ip_norm = str(ipaddress.ip_address(ip))
     except (ValueError, TypeError):
         raise ValueError("indirizzo IP non valido") from None
+    if "%" in ip:
+        raise ValueError("indirizzo IP non valido")
     if not isinstance(community, str) or not COMMUNITY_RE.fullmatch(community):
         raise ValueError("community SNMP non valida")
     runner = runner or run_tool
     confdir = tempfile.mkdtemp(prefix="landiscovery-snmp-")
     try:
-        os.chmod(confdir, 0o700)
+        # mkdtemp crea già la cartella con modo 0700.
+        # Se una build di net-snmp ignorasse defCommunity, la richiesta userebbe
+        # la community predefinita del programma: nessuna fuga della community.
         fd = os.open(os.path.join(confdir, "snmp.conf"),
                      os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as fh:
@@ -215,6 +230,9 @@ def query_snmp(ip: str, community: str, runner: Runner | None = None) -> Discove
     if any(ln.startswith(("Timeout", "No Response", "snmpget:")) or "No Response" in ln
            for ln in lines):
         return None
+    if lines[0].lower().startswith("no such"):
+        return None
     name = _clean(lines[0], MAX_NAME)
-    detail = _clean(lines[1], MAX_DETAIL) if len(lines) > 1 else ""
+    rest = [ln for ln in lines[1:] if not ln.lower().startswith("no such")]
+    detail = _clean(rest[0], MAX_DETAIL) if rest else ""
     return DiscoveredService(ip=ip_norm, kind="snmp", name=name, detail=detail)

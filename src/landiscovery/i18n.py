@@ -42,6 +42,13 @@ CATALOG = {
     "Save": "Salva",
     "Export": "Esporta",
     "No scans saved": "Nessuna scansione salvata",
+    "SSH": "SSH",
+    "RDP": "RDP",
+    "Browser": "Browser",
+    "Ping": "Ping",
+    "Traceroute": "Traceroute",
+    "Wake on LAN": "Riattiva via rete",
+    "Copy IP": "Copia IP",
 }
 
 _language = "en"

@@ -4,10 +4,12 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import subprocess
 import threading
 from pathlib import Path
 
 from .engine import ScanEngine, ScanOptions
+from .actions import build_action, copy_value, wake_on_lan
 from .i18n import _, set_language
 from .models import ScanResult
 from .profiles import ProfileStore, default_profiles_path
@@ -117,6 +119,7 @@ def main() -> int:
             self.table_store.set_sort_func(0, ip_sort, None)
             tree = Gtk.TreeView(model=self.table_store)
             tree.set_headers_clickable(True)
+            tree.connect("button-press-event", self._host_menu)
             for index, name in enumerate(COLUMNS):
                 renderer = Gtk.CellRendererText()
                 column = Gtk.TreeViewColumn(_(name), renderer, text=index)
@@ -131,6 +134,46 @@ def main() -> int:
             self.tree = tree
             self.set_default(self.start_button)
             self.show_all()
+
+        def _host_menu(self, tree, event):
+            if event.button != 3:
+                return False
+            selected = tree.get_path_at_pos(int(event.x), int(event.y))
+            if selected is None:
+                return False
+            path = selected[0]
+            tree.get_selection().select_path(path)
+            ip = self.table_store[path][0]
+            host = next((h for h in self.model.rows if h.ip == ip), None)
+            if host is None:
+                return False
+            menu = Gtk.Menu()
+            for label, kind in (("SSH", "ssh"), ("RDP", "rdp"),
+                                ("Browser", "browser"), ("Ping", "ping"),
+                                ("Traceroute", "traceroute")):
+                item = Gtk.MenuItem(label=_(label))
+                item.connect("activate", self._run_host_action, kind, host)
+                menu.append(item)
+            if host.mac:
+                item = Gtk.MenuItem(label=_("Wake on LAN"))
+                item.connect("activate", self._run_host_action, "wol", host)
+                menu.append(item)
+            item = Gtk.MenuItem(label=_("Copy IP"))
+            item.connect("activate", lambda *_: Gtk.Clipboard.get(
+                Gdk.SELECTION_CLIPBOARD).set_text(copy_value(host.ip), -1))
+            menu.append(item)
+            menu.show_all()
+            menu.popup_at_pointer(event)
+            return True
+
+        def _run_host_action(self, _item, kind, host):
+            try:
+                if kind == "wol":
+                    wake_on_lan(host.mac)
+                else:
+                    subprocess.Popen(build_action(kind, host), start_new_session=True)
+            except (OSError, ValueError) as exc:
+                self._message(str(exc))
 
         def _message(self, text, kind=Gtk.MessageType.ERROR):
             dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=kind,

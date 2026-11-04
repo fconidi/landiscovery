@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sS --script safe -oX -" start="1793786401" version="7.95" xmloutputversion="1.05">
+<host><status state="up" reason="arp-response"/>
+<address addr="192.168.1.10" addrtype="ipv4"/>
+<address addr="00:11:22:33:44:55" addrtype="mac"/>
+<ports>
+<port protocol="tcp" portid="21"><state state="open"/><service name="ftp"/>
+<script id="ftp-anon" output="Anonymous FTP login allowed (FTP code 230)&#10;Can't get directory listing: TIMEOUT"/>
+</port>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh"/>
+<script id="ssh-hostkey" output="&#10;  3072 SHA256:abcdef (RSA)&#10;  256 SHA256:ghijkl (ECDSA)&#10;  256 SHA256:mnopqr (ED25519)"/>
+<script id="ssh2-enum-algos" output="&#10;  kex_algorithms: (3)&#10;      curve25519-sha256&#10;      diffie-hellman-group1-sha1&#10;  encryption_algorithms: (2)&#10;      aes128-ctr&#10;      arcfour&#10;      3des-cbc&#10;  mac_algorithms: (1)&#10;      hmac-md5&#10;  server_host_key_algorithms: (1)&#10;      ssh-dss"/>
+</port>
+<port protocol="tcp" portid="23"><state state="open"/><service name="telnet"/>
+<script id="telnet-encryption" output="&#10;  Telnet server does not support encryption"/>
+</port>
+<port protocol="tcp" portid="80"><state state="open"/><service name="http"/>
+<script id="http-title" output="Welcome to the router"/>
+<script id="http-server-header" output="lighttpd/1.4.59"/>
+<script id="http-methods" output="&#10;  Supported Methods: GET HEAD POST OPTIONS TRACE PUT&#10;  Potentially risky methods: TRACE PUT"/>
+<script id="unknown-thing" output="something interesting"/>
+</port>
+<port protocol="tcp" portid="443"><state state="open"/><service name="https"/>
+<script id="ssl-cert" output="Subject: commonName=old.lan/organizationName=Home&#10;Issuer: commonName=old.lan&#10;Public Key type: rsa&#10;Not valid before: 2019-01-01T00:00:00&#10;Not valid after:  2020-01-01T00:00:00"><table key="validity"><elem key="notBefore">2019-01-01T00:00:00</elem><elem key="notAfter">2020-01-01T00:00:00</elem></table></script>
+</port>
+</ports>
+</host>
+<host><status state="up" reason="syn-ack"/>
+<address addr="fe80::2" addrtype="ipv6"/>
+<address addr="192.168.1.20" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/>
+<script id="smb-protocols" output="&#10;  dialects: &#10;    NT LM 0.12 (SMBv1) [dangerous, but default]&#10;    2.02&#10;    2.10"/>
+<script id="smb-security-mode" output="&#10;  account_used: guest&#10;  authentication_level: user&#10;  challenge_response: supported&#10;  message_signing: disabled (dangerous, but default)"><elem key="account_used">guest</elem><elem key="authentication_level">user</elem><elem key="challenge_response">supported</elem><elem key="message_signing">disabled</elem></script>
+</port>
+<port protocol="tcp" portid="3389"><state state="open"/><service name="ms-wbt-server"/>
+<script id="rdp-enum-encryption" output="&#10;  Security layer&#10;    CredSSP (NLA): SUCCESS&#10;    Native RDP: SUCCESS&#10;    SSL: SUCCESS"/>
+</port>
+<port protocol="udp" portid="161"><state state="open"/><service name="snmp"/>
+<script id="snmp-info" output="&#10;  enterprise: net-snmp&#10;  engineIDFormat: unknown"/>
+</port>
+</ports>
+<hostscript>
+<script id="nbstat" output="NetBIOS name: DESKTOP-1, NetBIOS user: &lt;unknown&gt;"/>
+</hostscript>
+</host>
+<host><status state="up" reason="syn-ack"/>
+<address addr="192.168.1.30" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="443"><state state="open"/><service name="https"/>
+<script id="ssl-cert" output="Subject: commonName=new.lan&#10;Issuer: commonName=CA&#10;Not valid before: 2024-01-01T00:00:00&#10;Not valid after:  2099-01-01T00:00:00"/>
+</port>
+<port protocol="tcp" portid="1900"><state state="open"/><service name="upnp"/>
+<script id="upnp-info" output="192.168.1.30&#10;  Server: Linux UPnP/1.0"/>
+<script id="banner" output="SSH-2.0-OpenSSH_9.2"/>
+</port>
+</ports>
+</host>
+</nmaprun>

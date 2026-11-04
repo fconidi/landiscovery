@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=LAN Discovery
+Name[it]=Scoperta rete locale
+GenericName=Network scanner
+GenericName[it]=Scanner di rete
+Comment=Discover hosts, services and inferred network paths
+Comment[it]=Trova host, servizi e percorsi di rete inferiti
+Exec=landiscovery gui
+Icon=org.syslinuxos.landiscovery
+Terminal=false
+Categories=Network;X-SysLinuxOS-Tools;
+Keywords=network;scan;hosts;services;map;
+StartupNotify=true

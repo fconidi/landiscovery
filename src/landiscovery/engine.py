@@ -141,7 +141,9 @@ class ScanEngine:
     def __init__(self, runner=None, oui=None, privileged: bool | None = None,
                  tools=None):
         if privileged is None:
-            privileged = os.geteuid() == 0 or shutil.which("pkexec") is not None
+            privileged = (os.geteuid() == 0 or
+                          (shutil.which("pkexec") is not None and
+                           os.access("/usr/lib/landiscovery/landiscovery-helper", os.X_OK)))
         self.privileged = bool(privileged)
         if runner is None:
             runner = HelperRunner(direct=not self.privileged)

@@ -1,4 +1,7 @@
 #!/usr/bin/python3
+import sys
+
+sys.path.insert(0, "/usr/share/landiscovery")
 from landiscovery.cli import main
 
 raise SystemExit(main())

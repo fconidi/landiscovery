@@ -95,6 +95,13 @@ class FakeOui:
         return "Acme"
 
 
+def test_missing_installed_helper_uses_reduced_mode(monkeypatch):
+    monkeypatch.setattr("landiscovery.engine.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("landiscovery.engine.shutil.which", lambda _: "/usr/bin/pkexec")
+    monkeypatch.setattr("landiscovery.engine.os.access", lambda *_: False)
+    assert ScanEngine(runner=FakeRunner()).privileged is False
+
+
 FULL = BUILTIN["full"]
 QUICK = BUILTIN["quick"]
 

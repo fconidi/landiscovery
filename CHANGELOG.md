@@ -1,0 +1,8 @@
+# Changelog
+
+## 1.0.0
+
+- Add GTK and command-line network scanning with configurable profiles.
+- Add host, port, service, OS, mDNS, SSDP and optional SNMP discovery.
+- Add safe security checks and an inferred network map.
+- Add local scan history, comparison, device inventory and CSV, JSON and HTML export.

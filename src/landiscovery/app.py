@@ -62,6 +62,7 @@ class ResultsModel:
 def main() -> int:
     import gi
     gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
     from gi.repository import Gdk, GLib, Gtk
 
     set_language("auto")
@@ -92,6 +93,7 @@ def main() -> int:
             self.profile.set_active(0)
             controls.pack_start(self.profile, False, False, 0)
             self.start_button = Gtk.Button(label=_("Start"))
+            self.start_button.set_can_default(True)
             self.start_button.connect("clicked", self.start_scan)
             controls.pack_start(self.start_button, False, False, 0)
             self.cancel_button = Gtk.Button(label=_("Cancel"))

@@ -242,10 +242,95 @@ def test_coverage_reflects_profile_and_privileges():
     res = engine().scan(["192.168.1.0/24"], FULL, ScanOptions())
     c = res.coverage
     assert (c.profile, c.ports, c.targets) == ("full", "1-65535", ["192.168.1.0/24"])
-    assert c.privileged and c.os_detect and c.service_detect and c.mdns and c.ssdp
-    assert not c.snmp and not c.traceroute and not c.security_checks
+    assert c.privileged and c.os_detect and c.service_detect
+    # passi non ancora collegati: mai dichiarati
+    assert not (c.mdns or c.ssdp or c.snmp or c.traceroute or c.security_checks)
     res = engine(privileged=False).scan(["192.168.1.0/24"], QUICK)
     assert not res.coverage.privileged and not res.coverage.os_detect
+    assert res.coverage.ports == "top100" and not res.coverage.service_detect
+
+
+def test_coverage_ping_profile_has_no_ports():
+    c = engine().scan(["192.168.1.0/24"], BUILTIN["ping"]).coverage
+    assert c.ports == "" and not c.service_detect and not c.os_detect
+
+
+def test_coverage_after_cancel_during_os_step():
+    eng = engine()
+
+    def on_call(op, params):
+        if op == "os_detect":
+            eng.cancel()
+
+    eng.runner.on_call = on_call
+    res = eng.scan(["192.168.1.0/24"], FULL)
+    c = res.coverage
+    assert res.status == "cancelled"
+    assert c.ports == "1-65535" and c.service_detect and not c.os_detect
+
+
+def test_coverage_after_failed_os_step():
+    r = FakeRunner(fail={"os_detect": HelperError("boom")})
+    c = engine(r).scan(["192.168.1.0/24"], FULL).coverage
+    assert c.ports == "1-65535" and not c.os_detect
+
+
+def test_coverage_after_failed_port_step():
+    r = FakeRunner(fail={"port_scan": HelperError("boom")})
+    r.fail = {}
+
+    class F(FakeRunner):
+        def run(self, op, params, on_line=None):
+            if op == "port_scan" and params["ports"] != "":
+                raise HelperError("boom")
+            return super().run(op, params, on_line)
+
+    c = engine(F()).scan(["192.168.1.0/24"], FULL).coverage
+    assert c.ports == "" and not c.service_detect
+
+
+def test_coverage_reduced_mode_with_os_profile():
+    c = engine(privileged=False).scan(["192.168.1.0/24"], FULL).coverage
+    assert not c.os_detect and not c.privileged and c.ports == "1-65535"
+
+
+def test_two_macs_one_ip_keeps_first_and_warns():
+    arp = ("192.168.1.1\taa:aa:aa:00:00:01\tOne\n"
+           "192.168.1.1\tbb:bb:bb:00:00:02\tTwo\n")
+    res = engine(FakeRunner(arp=arp, up=("192.168.1.1",))).scan(
+        ["192.168.1.0/24"], BUILTIN["ping"])
+    assert res.hosts[0].mac == "AA:AA:AA:00:00:01" and res.hosts[0].vendor == "One"
+    assert any("192.168.1.1" in w and "BB:BB:BB:00:00:02" in w for w in res.warnings)
+
+
+def test_overlapping_scan_raises():
+    eng = engine()
+    started, release = threading.Event(), threading.Event()
+
+    def on_call(op, params):
+        started.set()
+        release.wait(2)
+
+    eng.runner.on_call = on_call
+    t = threading.Thread(target=lambda: eng.scan(["192.168.1.0/24"], QUICK))
+    t.start()
+    assert started.wait(2)
+    with pytest.raises(EngineError, match="scan already running"):
+        eng.scan(["192.168.1.0/24"], QUICK)
+    release.set()
+    t.join(5)
+    assert eng.scan(["192.168.1.0/24"], BUILTIN["ping"]).status == "done"
+
+
+def test_progress_exception_is_logged(caplog):
+    import logging
+
+    def boom(step, fraction):
+        raise RuntimeError("cb-fail")
+
+    with caplog.at_level(logging.DEBUG, logger="landiscovery.engine"):
+        engine().scan(["192.168.1.0/24"], BUILTIN["ping"], on_progress=boom)
+    assert "cb-fail" in caplog.text
 
 
 def test_complete_true_only_on_full_success():

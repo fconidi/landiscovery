@@ -8,6 +8,7 @@ risultato con stato ``cancelled`` e i dati raccolti fino a quel momento.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import shutil
 import threading
@@ -20,6 +21,8 @@ from .nmapxml import ScanParseError, parse_nmap_xml
 from .oui import OuiDatabase
 from .profiles import Profile
 from .runner import HelperRunner, ScanCancelled
+
+log = logging.getLogger(__name__)
 
 
 class EngineError(Exception):
@@ -85,6 +88,7 @@ class ScanEngine:
         self.runner = runner
         self._oui = oui
         self._cancel = threading.Event()
+        self._lock = threading.Lock()
 
     @property
     def oui(self) -> OuiDatabase:
@@ -101,8 +105,23 @@ class ScanEngine:
 
     def scan(self, targets: list, profile: Profile, options: ScanOptions | None = None,
              on_progress=None) -> ScanResult:
-        self._cancel.clear()
-        self.runner.reset()
+        """Esegue la scansione e restituisce il risultato.
+
+        Un passo fallito non interrompe la scansione: lo stato resta ``done``
+        con ``complete=False`` e un avviso in ``warnings``. Lo stato è
+        ``failed`` solo se nessun passo è riuscito. ``coverage`` descrive ciò
+        che è stato davvero eseguito con successo.
+        """
+        if not self._lock.acquire(blocking=False):
+            raise EngineError("scan already running")
+        try:
+            self._cancel.clear()
+            self.runner.reset()
+            return self._scan(targets, profile, on_progress)
+        finally:
+            self._lock.release()
+
+    def _scan(self, targets, profile, on_progress) -> ScanResult:
         target_strs = [str(t) for t in targets]
         priv = self.privileged
         do_ports = profile.ports != ""
@@ -111,10 +130,10 @@ class ScanEngine:
             started=time.time(), targets=target_strs, profile=profile.name,
             status="running", reduced=not priv)
         result.coverage = Coverage(
-            targets=target_strs, profile=profile.name, ports=profile.ports,
-            privileged=priv, os_detect=do_os, service_detect=profile.service_detect,
-            traceroute=profile.traceroute, mdns=profile.mdns, ssdp=profile.ssdp,
-            snmp=profile.snmp, security_checks=profile.security_checks)
+            targets=target_strs, profile=profile.name, ports="",
+            privileged=priv, os_detect=False, service_detect=False,
+            traceroute=False, mdns=False, ssdp=False, snmp=False,
+            security_checks=False)
         if profile.os_detect and not priv:
             result.warnings.append(
                 "OS detection needs privileges and was skipped (reduced mode)")
@@ -187,6 +206,12 @@ class ScanEngine:
             if text is not None:
                 try:
                     for mac, (ip, vendor) in parse_arp_scan(text).items():
+                        known = hosts.get(ip)
+                        if known is not None and known.mac and known.mac != mac:
+                            state.result.warnings.append(
+                                f"arp discovery: {ip} answered from more than one "
+                                f"MAC ({known.mac}, {mac}); keeping the first")
+                            continue
                         self._merge(hosts, Host(ip=ip, mac=mac, vendor=vendor),
                                     ("mac", "vendor"))
                     state.ok()
@@ -229,6 +254,7 @@ class ScanEngine:
 
     def _ports(self, state, hosts, ips, profile) -> None:
         state.start("ports")
+        before = state.failures
         for chunk in self._chunks(ips):
             text = self._call(state, "port scan", "port_scan",
                               {"targets": chunk, "ports": profile.ports,
@@ -236,14 +262,20 @@ class ScanEngine:
             if text is not None:
                 self._absorb(state, "port scan", text, hosts,
                              ("ports", "hostname", "latency_ms", "mac", "vendor"))
+        if state.failures == before and not self._cancel.is_set():
+            cov = state.result.coverage
+            cov.ports, cov.service_detect = profile.ports, profile.service_detect
         state.end()
 
     def _os(self, state, hosts, ips) -> None:
         state.start("os")
+        before = state.failures
         for chunk in self._chunks(ips):
             text = self._call(state, "os detection", "os_detect", {"targets": chunk})
             if text is not None:
                 self._absorb(state, "os detection", text, hosts, ("os",))
+        if state.failures == before and not self._cancel.is_set():
+            state.result.coverage.os_detect = True
         state.end()
 
 
@@ -265,7 +297,7 @@ class _State:
         try:
             self.on_progress(name, max(0.0, min(1.0, fraction)))
         except Exception:
-            pass
+            log.debug("on_progress callback failed", exc_info=True)
 
     def start(self, name: str) -> None:
         self.index = self.steps.index(name)

@@ -59,3 +59,9 @@ def test_parse_truncated_raises():
 def test_parse_blank_or_foreign_raises(text):
     with pytest.raises(ScanParseError):
         parse_nmap_xml(text)
+
+
+def test_entity_declarations_rejected():
+    bomb = '<!DOCTYPE nmaprun [<!ENTITY a "aaaa">]><nmaprun>&a;</nmaprun>'
+    with pytest.raises(ScanParseError):
+        parse_nmap_xml(bomb)

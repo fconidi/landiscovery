@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .models import Finding
-from .nmapxml import ScanParseError
+from .nmapxml import ScanParseError, reject_entities
 
 MAX_TITLE = 120
 MAX_DETAIL = 300
@@ -107,9 +107,12 @@ def _contains(*needles: str) -> Callable[[Ctx], str | None]:
 
 
 def _smb1(c: Ctx) -> str | None:
-    t = c.text
-    if "SMBv1" in t or "NT LM 0.12" in t:
-        return ""
+    for line in c.text.split("\n"):
+        line = line.strip()
+        if re.match(r"NT LM 0\.12(?:[ \t]+\(SMBv1\))?(?:[ \t]|$)", line):
+            return ""
+        if re.match(r"(?:\d+(?:\.\d+)*[ \t]+)?\(SMBv1\)(?:[ \t]|$)", line):
+            return ""
     return None
 
 
@@ -153,7 +156,7 @@ def _http_risky(c: Ctx) -> str | None:
 
 
 _WEAK_SSH = re.compile(
-    r"(?<![\w-])(diffie-hellman-group1-sha1|arcfour[\w-]*|3des-cbc|hmac-md5[\w-]*|ssh-dss)(?![\w-])",
+    r"(?<![\w-])(diffie-hellman-group1-sha1|arcfour[\w-]*|3des-cbc|blowfish-cbc|cast128-cbc|diffie-hellman-group-exchange-sha1|hmac-md5[\w-]*|ssh-dss)(?![\w-])",
     re.IGNORECASE)
 
 
@@ -177,22 +180,28 @@ def _parse_date(value: str) -> dt.datetime | None:
 
 def _cert_expired(c: Ctx) -> str | None:
     raw = c.elems.get("notAfter")
-    if raw is None:
+    d = _parse_date(raw) if raw is not None else None
+    if d is None:
         m = re.search(r"Not valid after:[ \t]*([^\n]{0,40})", c.text)
         raw = m.group(1) if m else ""
-    d = _parse_date(raw)
+        d = _parse_date(raw)
     if d is None or d >= c.now:
         return None
     return "not valid after " + _cap(raw.strip(), 40)
 
 
+_RDP_LAYER = re.compile(
+    r"(?m)^[ \t]*(Native RDP|RDP Security Layer|SSL|RDSTLS)[ \t]*:?[ \t]*SUCCESS", re.IGNORECASE)
+_RDP_NLA = re.compile(r"(?m)^[ \t]*CredSSP[ \t]*\(NLA\)[ \t]*:[ \t]*([A-Za-z]+)")
+
+
 def _rdp(c: Ctx) -> str | None:
     t = c.text
-    native = re.search(r"(Native RDP|RDP Security Layer)[ \t]*:?[ \t]*SUCCESS", t, re.IGNORECASE)
-    if native:
-        return native.group(1) + " accepted"
-    credssp = re.search(r"CredSSP[^\n:]{0,30}:[ \t]*([A-Za-z]+)", t)
-    if credssp and credssp.group(1).upper() != "SUCCESS" and "SUCCESS" in t.upper():
+    layer = _RDP_LAYER.search(t)
+    if layer:
+        return layer.group(1) + " accepted without NLA"
+    nla = _RDP_NLA.search(t)
+    if nla and nla.group(1).upper() != "SUCCESS":
         return "CredSSP (NLA) not supported"
     return None
 
@@ -275,7 +284,7 @@ def _flat_elems(script: ET.Element) -> dict[str, str]:
             break
         key = el.get("key")
         if key and key not in out:
-            out[key] = _cap(_clean(el.text or ""), 200)
+            out[key] = _cap(_clean((el.text or "")[:400]), 200)
     return out
 
 
@@ -313,6 +322,7 @@ def _make(rule: Rule, evidence: str, label: str) -> Finding:
 def parse_nse_findings(xml_text: str, *, now: dt.datetime | None = None) -> list[Finding]:
     if not xml_text or not xml_text.strip():
         raise ScanParseError("output nmap vuoto")
+    reject_entities(xml_text)
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
@@ -370,6 +380,8 @@ def parse_nse_findings(xml_text: str, *, now: dt.datetime | None = None) -> list
             try:
                 port = int(p.get("portid", ""))
             except ValueError:
+                port = None
+            if port is not None and not 0 < port < 65536:
                 port = None
             proto = _clean(p.get("protocol") or "tcp")[:10]
             label = "" if port is None else f"{port}/{proto}"

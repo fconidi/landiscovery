@@ -31,8 +31,6 @@
 <address addr="192.168.1.20" addrtype="ipv4"/>
 <ports>
 <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/>
-<script id="smb-protocols" output="&#10;  dialects: &#10;    NT LM 0.12 (SMBv1) [dangerous, but default]&#10;    2.02&#10;    2.10"/>
-<script id="smb-security-mode" output="&#10;  account_used: guest&#10;  authentication_level: user&#10;  challenge_response: supported&#10;  message_signing: disabled (dangerous, but default)"><elem key="account_used">guest</elem><elem key="authentication_level">user</elem><elem key="challenge_response">supported</elem><elem key="message_signing">disabled</elem></script>
 </port>
 <port protocol="tcp" portid="3389"><state state="open"/><service name="ms-wbt-server"/>
 <script id="rdp-enum-encryption" output="&#10;  Security layer&#10;    CredSSP (NLA): SUCCESS&#10;    Native RDP: SUCCESS&#10;    SSL: SUCCESS"/>
@@ -42,6 +40,8 @@
 </port>
 </ports>
 <hostscript>
+<script id="smb-protocols" output="&#10;  dialects: &#10;    NT LM 0.12 (SMBv1) [dangerous, but default]&#10;    2.02&#10;    2.10"/>
+<script id="smb-security-mode" output="&#10;  account_used: guest&#10;  authentication_level: user&#10;  challenge_response: supported&#10;  message_signing: disabled (dangerous, but default)"><elem key="account_used">guest</elem><elem key="authentication_level">user</elem><elem key="challenge_response">supported</elem><elem key="message_signing">disabled</elem></script>
 <script id="nbstat" output="NetBIOS name: DESKTOP-1, NetBIOS user: &lt;unknown&gt;"/>
 </hostscript>
 </host>

@@ -10,6 +10,19 @@ class ScanParseError(Exception):
     """XML di nmap vuoto, troncato o non valido."""
 
 
+def reject_entities(text: str) -> None:
+    """Rifiuta dichiarazioni di entità o sottoinsiemi DTD (nmap non ne produce)."""
+    head = text[:4096] if len(text) > 4096 else text
+    low = text.lower()
+    if "<!entity" in low:
+        raise ScanParseError("XML con dichiarazioni di entità non ammesso")
+    i = head.lower().find("<!doctype")
+    if i >= 0:
+        end = head.find(">", i)
+        if end < 0 or "[" in head[i:end]:
+            raise ScanParseError("XML con sottoinsieme DTD non ammesso")
+
+
 def _port(el: ET.Element) -> Port | None:
     try:
         number = int(el.get("portid", ""))
@@ -71,6 +84,7 @@ def _host(el: ET.Element) -> Host | None:
 def parse_nmap_xml(text: str) -> list[Host]:
     if not text or not text.strip():
         raise ScanParseError("output nmap vuoto")
+    reject_entities(text)
     try:
         root = ET.fromstring(text)
     except ET.ParseError as exc:

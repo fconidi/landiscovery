@@ -22,6 +22,14 @@ def one(script_id, output, port=80, service="http", elems="", host="10.0.0.1"):
     )
 
 
+def hostscript(script_id, output, elems=""):
+    return (
+        '<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/><ports/><hostscript>'
+        '<script id="%s" output="%s">%s</script></hostscript></host></nmaprun>'
+        % (script_id, output, elems)
+    )
+
+
 def titles(findings, severity=None):
     return [f.title for f in findings if severity is None or f.severity == severity]
 
@@ -255,7 +263,10 @@ def test_hostile_attributes():
            '<port portid="99999999999999999999"><state/><script id="banner" output="hi"/></port>'
            '</ports><hostscript><script/></hostscript></host>'
            '<host><ports><port portid="23"><state state="open"/></port></ports></host></nmaprun>')
-    parse_nse_findings(xml)
+    f = parse_nse_findings(xml)
+    assert [(x.host, x.severity, x.title) for x in f] == [
+        ("10.0.0.1", "info", TITLES["banner"])]
+    assert f[0].detail == "hi"
 
 
 def test_rules_table_complete():
@@ -268,3 +279,112 @@ def test_rules_table_complete():
 
 def test_clean_strips_c0_controls():
     assert security._clean("a\x07b\x1bc\x00d\te") == "abcd e"
+
+
+# ---- review round 1
+
+@pytest.mark.parametrize("out", [
+    "SMBv1 not supported", "SMBv1 disabled", "dialects:&#10;  2.02&#10;  SMBv1 is disabled",
+    "SMBv1: not enabled"])
+def test_smb1_negative_phrases(out):
+    assert parse_nse_findings(hostscript("smb-protocols", out)) == []
+    assert parse_nse_findings(one("smb-protocols", out, 445)) == []
+
+
+@pytest.mark.parametrize("out", [
+    "dialects:&#10;  NT LM 0.12 (SMBv1) [dangerous, but default]&#10;  2.02",
+    "dialects:&#10;  NT LM 0.12&#10;  2.02",
+    "dialects:&#10;  2.02&#10;  (SMBv1)"])
+def test_smb1_dialect_lines(out):
+    f = parse_nse_findings(hostscript("smb-protocols", out))
+    assert titles(f) == [TITLES["smb1_enabled"]] and f[0].severity == "critical"
+
+
+def test_smb_hostscript_fixture(fx):
+    assert TITLES["smb1_enabled"] in titles(by_host(fx, "192.168.1.20"), "critical")
+    assert TITLES["smb_signing"] in titles(by_host(fx, "192.168.1.20"), "warning")
+
+
+def test_smb_security_mode_hostscript():
+    out = "account_used: guest&#10;message_signing: disabled"
+    assert set(titles(parse_nse_findings(hostscript("smb-security-mode", out)))) == {
+        TITLES["smb_signing"], TITLES["smb_guest"]}
+
+
+def test_smb_guest_negative():
+    xml = hostscript("smb-security-mode", "account_used: &lt;blank&gt;&#10;message_signing: required")
+    assert parse_nse_findings(xml) == []
+    xml = one("smb-security-mode", "", 445, "microsoft-ds",
+              '<elem key="account_used">user1</elem><elem key="message_signing">required</elem>')
+    assert parse_nse_findings(xml) == []
+
+
+def test_telnet_encryption_negative():
+    xml = one("telnet-encryption", "Telnet server supports encryption", 80, "http")
+    assert parse_nse_findings(xml) == []
+
+
+def test_nbstat_hostscript_only(fx):
+    assert [f.host for f in fx if f.title == TITLES["nbstat"]] == ["192.168.1.20"]
+
+
+def test_rdp_credssp_and_ssl_warns():
+    out = "Security layer&#10;  CredSSP (NLA): SUCCESS&#10;  SSL: SUCCESS&#10;  Native RDP: FAILURE"
+    assert titles(parse_nse_findings(one("rdp-enum-encryption", out, 3389))) == [TITLES["rdp_no_nla"]]
+
+
+def test_rdp_credssp_and_rdstls_warns():
+    out = "CredSSP (NLA): SUCCESS&#10;RDSTLS: SUCCESS"
+    assert titles(parse_nse_findings(one("rdp-enum-encryption", out, 3389))) == [TITLES["rdp_no_nla"]]
+
+
+def test_rdp_credssp_only_ok():
+    out = ("Security layer&#10;  CredSSP (NLA): SUCCESS&#10;  CredSSP with Early User Auth: SUCCESS"
+           "&#10;  Native RDP: FAILURE&#10;  RDSTLS: FAILURE&#10;  SSL: FAILURE")
+    assert parse_nse_findings(one("rdp-enum-encryption", out, 3389)) == []
+
+
+def test_rdp_native_only_warns():
+    out = "Security layer&#10;  Native RDP: SUCCESS"
+    assert titles(parse_nse_findings(one("rdp-enum-encryption", out, 3389))) == [TITLES["rdp_no_nla"]]
+
+
+def test_rdp_early_user_auth_does_not_mask_nla_failure():
+    out = ("CredSSP with Early User Auth: SUCCESS&#10;CredSSP (NLA): FAILURE&#10;SSL: FAILURE")
+    assert titles(parse_nse_findings(one("rdp-enum-encryption", out, 3389))) == [TITLES["rdp_no_nla"]]
+
+
+def test_cert_unparsable_elem_falls_back_to_text():
+    out = "Subject: commonName=x&#10;Not valid after:  2001-02-03T04:05:06"
+    elems = '<elem key="notAfter">garbage</elem>'
+    assert TITLES["cert_expired"] in titles(parse_nse_findings(one("ssl-cert", out, 443, "https", elems)))
+
+
+def test_large_elem_is_fast():
+    import time
+    elems = '<elem key="x">' + "A" * 3_000_000 + "</elem>"
+    t0 = time.monotonic()
+    parse_nse_findings(one("ssl-cert", "Subject: commonName=x", 443, "https", elems))
+    assert time.monotonic() - t0 < 1.0
+
+
+@pytest.mark.parametrize("algo", ["blowfish-cbc", "cast128-cbc", "diffie-hellman-group-exchange-sha1"])
+def test_more_weak_ssh_algos(algo):
+    f = parse_nse_findings(one("ssh2-enum-algos", "enc: aes128-ctr " + algo, 22, "ssh"))
+    assert titles(f) == [TITLES["ssh_weak_algos"]] and algo in f[0].detail
+
+
+def test_entity_declarations_rejected():
+    bomb = ('<?xml version="1.0"?><!DOCTYPE nmaprun [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;">]>'
+            '<nmaprun>&b;</nmaprun>')
+    with pytest.raises(ScanParseError):
+        parse_nse_findings(bomb)
+    from landiscovery.nmapxml import parse_nmap_xml
+    with pytest.raises(ScanParseError):
+        parse_nmap_xml(bomb)
+    with pytest.raises(ScanParseError):
+        parse_nse_findings('<!DOCTYPE nmaprun [ ]><nmaprun/>')
+
+
+def test_plain_doctype_accepted():
+    assert parse_nse_findings("<!DOCTYPE nmaprun>\n<nmaprun/>") == []

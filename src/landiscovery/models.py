@@ -45,6 +45,50 @@ class Host:
 
 
 @dataclass
+class DiscoveredService:
+    ip: str
+    kind: str  # "mdns", "ssdp" o "snmp"
+    name: str
+    detail: str
+
+
+@dataclass
+class Node:
+    id: str
+    label: str
+    kind: str  # "gateway", "router" o "host"
+    subnet: str
+
+
+@dataclass
+class Edge:
+    a: str
+    b: str
+
+
+@dataclass
+class Topology:
+    nodes: list[Node] = field(default_factory=list)
+    edges: list[Edge] = field(default_factory=list)
+    inferred: bool = True
+
+
+@dataclass
+class Coverage:
+    targets: list[str]
+    profile: str
+    ports: str
+    privileged: bool
+    os_detect: bool
+    service_detect: bool
+    traceroute: bool
+    mdns: bool
+    ssdp: bool
+    snmp: bool
+    security_checks: bool
+
+
+@dataclass
 class ScanResult:
     id: int | None = None
     started: float = 0.0
@@ -54,3 +98,8 @@ class ScanResult:
     hosts: list[Host] = field(default_factory=list)
     status: str = "running"
     reduced: bool = False
+    discovered: list[DiscoveredService] = field(default_factory=list)
+    topology: Topology | None = None
+    coverage: Coverage | None = None
+    complete: bool = False
+    warnings: list[str] = field(default_factory=list)

@@ -30,6 +30,10 @@ def validate_ports(ports: str) -> None:
             raise ValueError(f"intervallo non valido: {part!r}")
 
 
+_BOOL_FIELDS = ("os_detect", "service_detect", "traceroute", "mdns", "ssdp", "snmp",
+                "security_checks", "builtin")
+
+
 @dataclass
 class Profile:
     name: str
@@ -37,7 +41,9 @@ class Profile:
     os_detect: bool = False
     service_detect: bool = False
     traceroute: bool = False
-    discovery: bool = False
+    mdns: bool = False
+    ssdp: bool = False
+    snmp: bool = False
     security_checks: bool = False
     builtin: bool = False
 
@@ -45,11 +51,15 @@ class Profile:
         if not isinstance(self.name, str) or not _NAME_RE.fullmatch(self.name):
             raise ValueError(f"nome profilo non valido: {self.name!r}")
         validate_ports(self.ports)
+        for name in _BOOL_FIELDS:
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"il campo {name} deve essere booleano")
 
 
 BUILTIN: dict[str, Profile] = {
     "quick": Profile("quick", "top100", builtin=True),
-    "full": Profile("full", "1-65535", os_detect=True, service_detect=True, builtin=True),
+    "full": Profile("full", "1-65535", os_detect=True, service_detect=True,
+                    mdns=True, ssdp=True, builtin=True),
     "ping": Profile("ping", "", builtin=True),
     "security": Profile("security", "top100", service_detect=True,
                         security_checks=True, builtin=True),
@@ -78,8 +88,15 @@ class ProfileStore:
         for item in data:
             if not isinstance(item, dict):
                 continue
+            kwargs = {k: v for k, v in item.items() if k in names}
+            if "discovery" in item:
+                legacy = item["discovery"]
+                if not isinstance(legacy, bool):
+                    continue
+                kwargs.setdefault("mdns", legacy)
+                kwargs.setdefault("ssdp", legacy)
             try:
-                prof = Profile(**{k: v for k, v in item.items() if k in names}, builtin=False)
+                prof = Profile(**kwargs, builtin=False)
             except (TypeError, ValueError):
                 continue
             if prof.name not in BUILTIN:

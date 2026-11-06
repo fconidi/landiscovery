@@ -44,8 +44,8 @@ ports or prove which cables connect devices.
 
 Install from the [SysLinuxOS-Tools APT repository](https://github.com/fconidi/SysLinuxOS-Tools)
 with `sudo apt install landiscovery`, or download the
-[1.0.2 Debian package](https://github.com/fconidi/landiscovery/releases/tag/v1.0.2)
-and install it with `sudo apt install ./landiscovery_1.0.2_all.deb`.
+[1.0.3 Debian package](https://github.com/fconidi/landiscovery/releases/tag/v1.0.3)
+and install it with `sudo apt install ./landiscovery_1.0.3_all.deb`.
 
 The graphical application appears in the **SysLinuxOS Tools** and **Networking**
 menus. Run `landiscovery gui` or `lds gui` from a terminal. The package requires

@@ -638,3 +638,17 @@ def test_helper_script():
                          capture_output=True, timeout=10)
     assert out.returncode == 2
     assert out.stderr.startswith(b"landiscovery-helper: ")
+
+
+def test_port_scan_resolves_names_only_when_requested():
+    plain = build_command("port_scan", ps(), euid=0)
+    assert plain[1:4] == ["-n", "-oX", "-"]
+    resolved = build_command("port_scan", {**ps(), "resolve": True}, euid=0)
+    assert "-n" not in resolved and resolved[1:3] == ["-oX", "-"]
+    with pytest.raises(HelperError):
+        build_command("port_scan", {**ps(), "resolve": "yes"})
+
+
+def test_other_operations_never_resolve_names():
+    for op in ("os_detect", "traceroute"):
+        assert "-n" in build_command(op, {"targets": ["10.0.0.1"]}, euid=0)

@@ -43,14 +43,16 @@ class ScanOptions:
     snmp_community: str | None = None
 
 
-def parse_arp_scan(text: str) -> dict[str, tuple[str, str]]:
+def parse_arp_entries(text: str) -> list[tuple[str, str, str]]:
     """Legge l'output di arp-scan: righe ``IP<TAB>MAC<TAB>produttore``.
 
-    Restituisce ``{MAC maiuscolo: (ip, produttore)}``. Intestazione, riepilogo
-    e righe non riconoscibili sono ignorati; l'annotazione ``(DUP: n)`` dei
-    duplicati viene rimossa e il produttore ``(Unknown...)`` diventa vuoto.
+    Restituisce ``[(ip, MAC maiuscolo, produttore)]`` senza ripetere la stessa
+    coppia (ip, MAC): più indirizzi con lo stesso MAC restano tutti. Intestazione,
+    riepilogo e righe non riconoscibili sono ignorati; l'annotazione ``(DUP: n)``
+    viene rimossa e il produttore ``(Unknown...)`` diventa vuoto.
     """
-    result: dict[str, tuple[str, str]] = {}
+    result: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for line in (text or "").splitlines():
         parts = line.rstrip("\r\n").split("\t")
         if len(parts) < 2:
@@ -67,6 +69,16 @@ def parse_arp_scan(text: str) -> dict[str, tuple[str, str]]:
             vendor = ""
         if "(DUP:" in vendor:
             vendor = vendor.split("(DUP:")[0].strip()
+        if (ip, mac) not in seen:
+            seen.add((ip, mac))
+            result.append((ip, mac, vendor))
+    return result
+
+
+def parse_arp_scan(text: str) -> dict[str, tuple[str, str]]:
+    """Come ``parse_arp_entries`` ma ``{MAC: (primo ip, produttore)}``."""
+    result: dict[str, tuple[str, str]] = {}
+    for ip, mac, vendor in parse_arp_entries(text):
         result.setdefault(mac, (ip, vendor))
     return result
 
@@ -223,7 +235,7 @@ class ScanEngine:
         hosts: dict[str, Host] = {}
         hops: dict[str, list[str]] = {}
         try:
-            self._discovery(state, hosts, target_strs, priv)
+            self._discovery(state, hosts, target_strs, priv, profile.resolve_names)
             ips = sorted(hosts, key=_ip_key)
             if do_ports:
                 self._ports(state, hosts, ips, profile)
@@ -290,14 +302,14 @@ class ScanEngine:
             if value not in (None, "", []):
                 setattr(cur, name, value)
 
-    def _discovery(self, state, hosts, targets, priv) -> None:
+    def _discovery(self, state, hosts, targets, priv, resolve=False) -> None:
         state.start("discovery")
         v4 = not targets or all(":" not in t for t in targets)
         if priv and v4:
             text = self._call(state, "arp discovery", "arp_discover", {"targets": targets})
             if text is not None:
                 try:
-                    for mac, (ip, vendor) in parse_arp_scan(text).items():
+                    for ip, mac, vendor in parse_arp_entries(text):
                         known = hosts.get(ip)
                         if known is not None and known.mac and known.mac != mac:
                             state.result.warnings.append(
@@ -311,7 +323,8 @@ class ScanEngine:
                     state.fail(f"arp discovery: {exc}")
         if targets:
             text = self._call(state, "host discovery", "port_scan",
-                              {"targets": targets, "ports": "", "service": False})
+                              {"targets": targets, "ports": "", "service": False,
+                               "resolve": resolve})
             if text is None:
                 err = state.last_error
                 if err is not None and _missing_tool(err) and not hosts and not state.successes:
@@ -350,7 +363,8 @@ class ScanEngine:
         for chunk in self._chunks(ips):
             text = self._call(state, "port scan", "port_scan",
                               {"targets": chunk, "ports": profile.ports,
-                               "service": profile.service_detect})
+                               "service": profile.service_detect,
+                               "resolve": profile.resolve_names})
             if text is not None:
                 self._absorb(state, "port scan", text, hosts,
                              ("ports", "hostname", "latency_ms", "mac", "vendor"))

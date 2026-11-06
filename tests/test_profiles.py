@@ -120,3 +120,9 @@ def test_stored_non_bool_flag_skipped(tmp_path):
                                 {"name": "ok", "ports": "80"}]))
     loaded = ProfileStore(path).load()
     assert "ok" in loaded and "bad" not in loaded and "bad2" not in loaded
+
+
+def test_builtin_profiles_resolve_names_and_custom_default_is_off():
+    from landiscovery.profiles import BUILTIN, Profile
+    assert all(p.resolve_names for p in BUILTIN.values())
+    assert Profile("custom", "22").resolve_names is False

@@ -44,6 +44,32 @@ class Host:
         return self.mac or self.ip
 
 
+def open_ports(host: Host) -> list[Port]:
+    return [p for p in host.ports if p.state == "open"]
+
+
+def service_summary(host: Host) -> str:
+    """Servizi scoperti (mDNS, SSDP, SNMP) e servizi riconosciuti sulle porte aperte."""
+    detected = [f"{p.service} {p.version}".strip() + f" ({p.number}/{p.proto})"
+                for p in open_ports(host) if p.service]
+    return ", ".join([*host.services, *detected])
+
+
+def shared_macs(hosts: list[Host]) -> set[str]:
+    """MAC presenti su più indirizzi IP nella stessa scansione (alias, proxy-ARP)."""
+    seen: dict[str, str] = {}
+    shared: set[str] = set()
+    for host in hosts:
+        if host.mac and seen.setdefault(host.mac, host.ip) != host.ip:
+            shared.add(host.mac)
+    return shared
+
+
+def host_key(host: Host, shared: set[str]) -> str:
+    """Chiave stabile: il MAC, ma l'IP se il MAC è condiviso da più host."""
+    return host.ip if host.mac in shared else host.key
+
+
 @dataclass
 class DiscoveredService:
     ip: str

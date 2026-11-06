@@ -54,6 +54,7 @@ def main(argv=None) -> int:
                 "usr/share/icons/hicolor/scalable/apps/org.syslinuxos.landiscovery.svg")
         for name in ("README.md", "CHANGELOG.md", "LICENSE"):
             install(source / name, f"usr/share/doc/landiscovery/{name}")
+        install(source / "LICENSE", "usr/share/doc/landiscovery/copyright")
         control = root / "DEBIAN"
         control.mkdir()
         (control / "control").write_text(

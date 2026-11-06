@@ -7,7 +7,7 @@ from dataclasses import asdict
 from html import escape
 from pathlib import Path
 
-from .models import ScanResult
+from .models import ScanResult, open_ports, service_summary
 
 
 def export_csv(result: ScanResult, path: Path) -> None:
@@ -18,9 +18,8 @@ def export_csv(result: ScanResult, path: Path) -> None:
         for host in result.hosts:
             writer.writerow((host.ip, host.hostname, host.mac or "", host.vendor,
                              "" if host.latency_ms is None else host.latency_ms,
-                             ", ".join(f"{p.number}/{p.proto}" for p in host.ports
-                                       if p.state == "open"),
-                             ", ".join(host.services), host.os))
+                             ", ".join(f"{p.number}/{p.proto}" for p in open_ports(host)),
+                             service_summary(host), host.os))
 
 
 def export_json(result: ScanResult, path: Path) -> None:
@@ -35,9 +34,11 @@ def export_html(result: ScanResult, path: Path) -> None:
     rows = []
     for host in result.hosts:
         ports = ", ".join(f"{p.number}/{p.proto} {p.service} {p.version}".strip()
-                          for p in host.ports if p.state == "open")
+                          for p in open_ports(host))
+        latency = "" if host.latency_ms is None else host.latency_ms
         rows.append("<tr>" + "".join(map(cell, (host.ip, host.hostname, host.mac or "",
-                                             host.vendor, ports, host.os))) + "</tr>")
+                                             host.vendor, latency, ports,
+                                             service_summary(host), host.os))) + "</tr>")
     title = escape(f"landiscovery — {result.profile}", quote=True)
     content = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
                f"<title>{title}</title><style>"
@@ -47,6 +48,7 @@ def export_html(result: ScanResult, path: Path) -> None:
                "</style></head><body>"
                f"<h1>{title}</h1><table><thead><tr>"
                "<th>IP</th><th>Hostname</th><th>MAC</th><th>Vendor</th>"
-               "<th>Open ports</th><th>OS</th></tr></thead><tbody>"
+               "<th>Latency (ms)</th><th>Open ports</th><th>Services</th>"
+               "<th>OS</th></tr></thead><tbody>"
                + "".join(rows) + "</tbody></table></body></html>\n")
     Path(path).write_text(content, encoding="utf-8")

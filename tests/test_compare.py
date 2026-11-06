@@ -71,3 +71,23 @@ def test_compare_mac_identity_survives_ip_change():
 def test_compare_privilege_modes_not_comparable():
     diff = compare_scans(scan([]), scan([], privileged=False))
     assert not diff.comparable
+
+
+def test_hosts_sharing_a_mac_are_compared_by_ip():
+    mac = "AA:BB:CC:00:00:01"
+    old = scan([Host("192.168.1.2", mac), Host("192.168.1.3", mac)])
+    new = scan([Host("192.168.1.2", mac)])
+    diff = compare_scans(old, new)
+    assert [h.ip for h in diff.gone_hosts] == ["192.168.1.3"]
+    assert diff.new_hosts == [] and diff.changed == []
+    added = compare_scans(scan([Host("192.168.1.2", mac)]),
+                          scan([Host("192.168.1.2", mac), Host("192.168.1.4", mac)]))
+    assert [h.ip for h in added.new_hosts] == ["192.168.1.4"]
+    assert added.gone_hosts == [] and added.changed == []
+
+
+def test_unique_mac_still_reports_an_ip_change():
+    mac = "AA:BB:CC:00:00:01"
+    diff = compare_scans(scan([Host("192.168.1.2", mac)]), scan([Host("192.168.1.9", mac)]))
+    assert diff.new_hosts == diff.gone_hosts == []
+    assert [c.fields for c in diff.changed] == [["ip"]]

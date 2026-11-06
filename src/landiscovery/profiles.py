@@ -31,7 +31,7 @@ def validate_ports(ports: str) -> None:
 
 
 _BOOL_FIELDS = ("os_detect", "service_detect", "traceroute", "mdns", "ssdp", "snmp",
-                "security_checks", "builtin")
+                "security_checks", "builtin", "resolve_names")
 
 
 @dataclass
@@ -46,6 +46,8 @@ class Profile:
     snmp: bool = False
     security_checks: bool = False
     builtin: bool = False
+    # Reverse DNS lookups for the hosts found (queries the configured resolver).
+    resolve_names: bool = False
 
     def __post_init__(self):
         if not isinstance(self.name, str) or not _NAME_RE.fullmatch(self.name):
@@ -57,12 +59,12 @@ class Profile:
 
 
 BUILTIN: dict[str, Profile] = {
-    "quick": Profile("quick", "top100", builtin=True),
+    "quick": Profile("quick", "top100", builtin=True, resolve_names=True),
     "full": Profile("full", "1-65535", os_detect=True, service_detect=True,
-                    mdns=True, ssdp=True, builtin=True),
-    "ping": Profile("ping", "", builtin=True),
+                    mdns=True, ssdp=True, builtin=True, resolve_names=True),
+    "ping": Profile("ping", "", builtin=True, resolve_names=True),
     "security": Profile("security", "top100", service_detect=True,
-                        security_checks=True, builtin=True),
+                        security_checks=True, builtin=True, resolve_names=True),
 }
 
 

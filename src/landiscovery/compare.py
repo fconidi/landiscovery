@@ -4,7 +4,7 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass, field
 
-from .models import Host, ScanResult
+from .models import Host, ScanResult, host_key, shared_macs
 
 
 @dataclass
@@ -81,8 +81,9 @@ def compare_scans(old: ScanResult, new: ScanResult) -> Diff:
     result = Diff(comparable=not reasons, reasons=reasons)
     if reasons:
         return result
-    before = {host.key: host for host in old.hosts}
-    after = {host.key: host for host in new.hosts}
+    shared = shared_macs(old.hosts) | shared_macs(new.hosts)
+    before = {host_key(host, shared): host for host in old.hosts}
+    after = {host_key(host, shared): host for host in new.hosts}
     result.new_hosts = [host for key, host in after.items() if key not in before]
     result.gone_hosts = [host for key, host in before.items() if key not in after]
     result.changed = [HostChange(key, before[key], after[key], fields)

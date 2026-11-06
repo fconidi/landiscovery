@@ -247,3 +247,13 @@ def test_gateway_vote_tie_uses_numeric_order():
     n = nodes(build_topology(hosts, hops, None))
     assert n["10.0.0.9"].kind == "gateway"
     assert n["10.0.0.10"].kind == "router"
+
+
+def test_hosts_sharing_a_mac_keep_separate_nodes():
+    from landiscovery.models import Host
+    from landiscovery.topology import build_topology
+    mac = "AA:BB:CC:00:00:01"
+    topo = build_topology([Host("10.0.0.2", mac), Host("10.0.0.3", mac), Host("10.0.0.1")],
+                          {}, "10.0.0.1")
+    ids = {n.id for n in topo.nodes}
+    assert {"10.0.0.2", "10.0.0.3", "10.0.0.1"} <= ids

@@ -117,6 +117,9 @@ def main(argv: list[str] | None = None) -> int:
             exporters = {"csv": export_csv, "json": export_json, "html": export_html}
             exporters[args.format](store.get_scan(args.id), args.output)
         return 0
-    except (EngineError, KeyError, OSError, ValueError) as exc:
+    except KeyError as exc:
+        print(f"landiscovery: scan {exc.args[0]} not found", file=sys.stderr)
+        return 1
+    except (EngineError, OSError, ValueError) as exc:
         print(f"landiscovery: {exc}", file=sys.stderr)
         return 1

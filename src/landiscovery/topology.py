@@ -5,7 +5,7 @@ import ipaddress
 import xml.etree.ElementTree as ET
 from collections import Counter
 
-from .models import Edge, Host, Node, Topology
+from .models import Edge, Host, Node, Topology, host_key, shared_macs
 from .nmapxml import ScanParseError, reject_entities
 
 _KIND_ORDER = {"gateway": 0, "router": 1, "host": 2}
@@ -86,6 +86,7 @@ def build_topology(hosts: list[Host], hops: dict[str, list[str]],
         gw_ip = _infer_gateway(hops)
     gw_id = gw_ip if gw_ip else VIRTUAL_GATEWAY
 
+    shared = shared_macs(hosts)
     by_ip = {(_norm(h.ip) or h.ip): h for h in hosts}
     hops_by_ip = {(_norm(k) or k): v for k, v in hops.items()}
     nodes: dict[str, Node] = {}
@@ -104,13 +105,13 @@ def build_topology(hosts: list[Host], hops: dict[str, list[str]],
         if ip == gw_ip:
             return gw_id
         h = by_ip.get(ip)
-        return h.key if h else ip
+        return host_key(h, shared) if h else ip
 
     def link(a: str, b: str) -> None:
         if a != b:
             edges.add((a, b) if a < b else (b, a))
 
-    for host in sorted(hosts, key=lambda h: h.key):
+    for host in sorted(hosts, key=lambda h: host_key(h, shared)):
         hip = _norm(host.ip) or host.ip
         hid = node_id(hip)
         chain: list[str] = []

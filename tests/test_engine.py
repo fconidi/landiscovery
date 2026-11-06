@@ -190,7 +190,7 @@ def test_targets_passed_as_strings():
     assert r.calls[1][1]["targets"] == ["192.168.1.0/24", "10.0.0.1"]
     scan_call = [c for c in r.calls if c[0] == "port_scan" and c[1]["ports"] != ""][0]
     assert scan_call[1] == {"targets": ["192.168.1.1", "192.168.1.20"],
-                            "ports": "top100", "service": False}
+                            "ports": "top100", "service": False, "resolve": True}
 
 
 def test_ping_profile_skips_port_scan():
@@ -737,3 +737,11 @@ def test_read_default_gateway(tmp_path):
     bad = tmp_path / "bad"
     bad.write_text("garbage\n\x00\xff")
     assert read_default_gateway(str(bad)) is None
+
+
+def test_parse_arp_entries_keeps_every_ip_of_a_shared_mac():
+    from landiscovery.engine import parse_arp_entries
+    text = ("10.0.0.2\taa:bb:cc:00:00:01\tVendor\n10.0.0.3\taa:bb:cc:00:00:01\tVendor\n"
+            "10.0.0.3\taa:bb:cc:00:00:01\tVendor (DUP: 2)\n")
+    assert parse_arp_entries(text) == [("10.0.0.2", "AA:BB:CC:00:00:01", "Vendor"),
+                                       ("10.0.0.3", "AA:BB:CC:00:00:01", "Vendor")]

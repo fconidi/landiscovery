@@ -70,7 +70,7 @@ _PARAMS: dict[str, frozenset[str]] = {
     "traceroute": frozenset({"targets"}),
 }
 
-_NMAP_BASE = ["-n", "-oX", "-"]
+_NMAP_BASE = ["-oX", "-"]
 
 # Ogni opzione che build_command può emettere prima del separatore "--".
 FIXED_OPTIONS = frozenset({
@@ -91,11 +91,14 @@ def _short(value) -> str:
     return text
 
 
+_OPTIONAL: dict[str, frozenset[str]] = {"port_scan": frozenset({"resolve"})}
+
+
 def _check_keys(op: str, params) -> None:
     if not isinstance(params, dict):
         raise HelperError("params must be an object")
     expected = _PARAMS[op]
-    keys = set(params)
+    keys = set(params) - _OPTIONAL.get(op, frozenset())
     if keys - expected:
         raise HelperError(f"unknown parameters: {_short(sorted(map(str, keys - expected)))}")
     if expected - keys:
@@ -164,12 +167,17 @@ def build_command(op: str, params: dict, euid: int | None = None) -> list[str]:
 
     nets = _targets(params["targets"])
     opts: list[str] = ["-6"] if nets[0].version == 6 else []
+    no_resolve = True
 
     if op == "port_scan":
         ports = _ports(params["ports"])
         service = params["service"]
         if not isinstance(service, bool):
             raise HelperError("service must be a boolean")
+        resolve = params.get("resolve", False)
+        if not isinstance(resolve, bool):
+            raise HelperError("resolve must be a boolean")
+        no_resolve = not resolve
         if ports == "":
             opts.append("-sn")
         else:
@@ -195,7 +203,7 @@ def build_command(op: str, params: dict, euid: int | None = None) -> list[str]:
                 chosen.append(name)
         opts += [_scan_type(euid), *_port_args(ports), "--script", ",".join(chosen)]
 
-    return ["nmap", *_NMAP_BASE, *opts, "--", *map(str, nets)]
+    return ["nmap", *(["-n"] if no_resolve else []), *_NMAP_BASE, *opts, "--", *map(str, nets)]
 
 
 def _parse_request(raw) -> tuple[str, dict]:

@@ -111,6 +111,10 @@ class Store:
                        "note=excluded.note, tags=excluded.tags",
                        (key, name, note, json.dumps(tags, ensure_ascii=False)))
 
+    def delete_device(self, key: str) -> None:
+        with self._connect() as db:
+            db.execute("DELETE FROM devices WHERE key = ?", (key,))
+
     def get_device(self, key: str) -> Device | None:
         with self._connect() as db:
             row = db.execute("SELECT key, name, note, tags FROM devices WHERE key = ?",

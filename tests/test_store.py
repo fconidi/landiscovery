@@ -79,3 +79,11 @@ def test_device_by_mac_survives_ip_change(tmp_path):
     assert store.list_devices()[0].tags == ["shared"]
     store.set_device(key, "Printer 2", "Office", [])
     assert store.get_device(key).name == "Printer 2"
+
+
+def test_delete_device(tmp_path):
+    store = Store(tmp_path / "scans.db")
+    store.set_device("aa:bb", "Printer", "", [])
+    store.delete_device("aa:bb")
+    store.delete_device("missing")
+    assert store.list_devices() == []

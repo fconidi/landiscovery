@@ -68,6 +68,7 @@ CATALOG = {
     "Refresh": "Aggiorna",
     "Delete": "Elimina",
     "Delete scan {id}?": "Eliminare la scansione {id}?",
+    "Delete device {key}?": "Eliminare il dispositivo {key}?",
     "Device key is required": "La chiave del dispositivo è obbligatoria",
     "{n} hosts": "{n} host",
     "done": "completata",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+
+- Add a Delete button to the Inventory tab to remove a saved device after confirmation.
+
 ## 1.0.3
 
 - Show host names: the built-in profiles now resolve reverse DNS names, and custom profiles can enable it with `resolve_names`.

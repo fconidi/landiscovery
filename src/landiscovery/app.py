@@ -347,12 +347,16 @@ def main() -> int:
             save = Gtk.Button(label=_("Save"))
             save.connect("clicked", self._save_device)
             fields.pack_start(save, False, False, 0)
+            remove = Gtk.Button(label=_("Delete"))
+            remove.connect("clicked", self._delete_device)
+            fields.pack_start(remove, False, False, 0)
             self.device_store = Gtk.ListStore(str, str, str, str)
             device_tree = Gtk.TreeView(model=self.device_store)
             for index, name in enumerate((_("Key"), _("Name"), _("Notes"), _("Tags"))):
                 device_tree.append_column(Gtk.TreeViewColumn(name, Gtk.CellRendererText(),
                                                              text=index))
             device_tree.connect("row-activated", self._edit_device)
+            self.device_tree = device_tree
             scroll = Gtk.ScrolledWindow()
             scroll.add(device_tree)
             inventory.pack_start(with_placeholder(scroll, self.device_store, _("No devices saved")), True, True, 0)
@@ -468,6 +472,17 @@ def main() -> int:
                                   [tag.strip() for tag in values["Tags"].split(",")
                                    if tag.strip()])
             self._refresh_history()
+
+        def _delete_device(self, *_args):
+            model, tree_iter = self.device_tree.get_selection().get_selected()
+            if tree_iter is None:
+                return
+            key = model[tree_iter][0]
+            if self._confirm(_("Delete device {key}?").format(key=key)):
+                self.store.delete_device(key)
+                for entry in self.device_entries.values():
+                    entry.set_text("")
+                self._refresh_history()
 
         def _edit_device(self, tree, path, *_args):
             row = tree.get_model()[path]
